@@ -7,6 +7,11 @@ if (menuButton && sidebar) {
   });
 }
 
+const collapseButton = document.querySelector('[data-collapse]');
+if (collapseButton) {
+  collapseButton.addEventListener('click', () => document.body.classList.toggle('sidebar-collapsed'));
+}
+
 const fileInput = document.querySelector('.drop-zone input[type="file"]');
 const fileName = document.querySelector('[data-file-name]');
 if (fileInput && fileName) {

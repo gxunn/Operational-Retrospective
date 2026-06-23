@@ -143,7 +143,11 @@ def dashboard(request: Request):
         target = latest or (date.today() - timedelta(days=1))
         stats = report_stats(db, target)
         days = [target - timedelta(days=offset) for offset in range(6, -1, -1)]
-        trends = [{"date": day.strftime("%m/%d"), "views": report_stats(db, day)["current"]["views"]} for day in days]
+        trends = [{"date": day.strftime("%-m/%-d"), "views": report_stats(db, day)["current"]["views"]} for day in days]
+        max_trend = max((item["views"] for item in trends), default=0) or 1
+        for index, item in enumerate(trends):
+            item["x"] = round(7 + index * 86 / 6, 2)
+            item["y"] = round(82 - item["views"] / max_trend * 58, 2)
         accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.is_active.is_(True))).all()
         account_rows = []
         for account in accounts:
@@ -153,7 +157,26 @@ def dashboard(request: Request):
                     DailyAccountMetric.metric_date == target,
                 )
             )
-            account_rows.append({"account": account, "metric": metric})
+            previous_metric = db.scalar(
+                select(DailyAccountMetric).where(
+                    DailyAccountMetric.account_id == account.id,
+                    DailyAccountMetric.metric_date == target - timedelta(days=1),
+                )
+            )
+            interactions = (metric.likes + metric.comments + metric.favorites + metric.shares) if metric else 0
+            previous_interactions = (
+                previous_metric.likes + previous_metric.comments + previous_metric.favorites + previous_metric.shares
+            ) if previous_metric else 0
+            rate = interactions / metric.views if metric and metric.views else 0
+            previous_rate = previous_interactions / previous_metric.views if previous_metric and previous_metric.views else 0
+            follower_change = ((metric.followers_new - previous_metric.followers_new) / previous_metric.followers_new * 100) if metric and previous_metric and previous_metric.followers_new else None
+            account_rows.append({
+                "account": account,
+                "metric": metric,
+                "rate": rate,
+                "rate_change": (rate - previous_rate) * 100,
+                "follower_change": follower_change,
+            })
         contents = db.scalars(
             select(ContentDailyMetric).where(ContentDailyMetric.metric_date == target).order_by(ContentDailyMetric.views.desc()).limit(8)
         ).all()
@@ -167,6 +190,7 @@ def dashboard(request: Request):
             account_rows=account_rows,
             contents=contents,
             report_hour=f"{settings.report_hour:02d}:{settings.report_minute:02d}",
+            target_weekday="星期" + "一二三四五六日"[target.weekday()],
         )
 
 
