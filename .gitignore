@@ -1,0 +1,13 @@
+.env
+.env.production
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+data/
+uploads/
+reports/
+*.db
+.DS_Store
+*.swp
+*.swo

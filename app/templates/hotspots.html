@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}每日热点 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="page-heading hotspot-heading">
+  <div><p class="section-note">内容雷达</p><h1>每日热点</h1><p>先看平台热度，再筛选能自然融入无人机足球的内容机会。</p></div>
+  <div class="heading-actions">
+    <span class="schedule-note"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#clock"></use></svg>每天 <strong>{{ '%02d:%02d'|format(settings.hotspot_hour, settings.hotspot_minute) }}</strong> 自动更新</span>
+    <form method="post" action="/hotspots/refresh"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button primary">立即刷新热点</button></form>
+  </div>
+</section>
+
+{% if report %}
+<section class="hotspot-status panel">
+  <div><span class="status-dot {{ 'on' if report.status == 'generated' else ('wait' if report.status == 'generated_with_warning' else 'off') }}">{{ {'generated':'已更新','generated_with_warning':'使用缓存','failed':'更新失败'}.get(report.status, report.status) }}</span><strong>{{ report.report_date }} 热点简报</strong><small>最后尝试：{{ report.updated_at.strftime('%m-%d %H:%M') }}</small></div>
+  {% if payload.summary %}<p>{{ payload.summary }}</p>{% endif %}
+  {% if report.error_message %}<p class="hotspot-warning">{{ report.error_message }}</p>{% endif %}
+</section>
+{% else %}
+<section class="empty-state hotspot-empty"><span class="red-rule"></span><h2>还没有热点简报</h2><p>点击“立即刷新热点”，系统会检索近期平台热点并生成选题。</p></section>
+{% endif %}
+
+{% if payload.realtime or payload.weekly %}
+<div class="hotspot-overview-grid">
+  <section class="panel hotspot-list-panel"><div class="panel-head"><div><h2>实时热点</h2><p>最近 24 小时，优先判断是否需要马上跟进</p></div><span class="live-label">LIVE</span></div>
+    <div class="hotspot-list">{% for item in payload.realtime %}<article class="hotspot-item"><div class="hotspot-rank">{{ '%02d'|format(loop.index) }}</div><div><h3>{{ item.topic }}</h3><div class="platform-tags">{% for platform in item.platforms %}<span>{{ platform }}</span>{% endfor %}</div><p>{{ item.heat_reason }}</p><strong>可用切口：{{ item.usable_angle }}</strong>{% if item.source_urls %}<a href="{{ item.source_urls[0] }}" target="_blank" rel="noopener noreferrer">查看依据</a>{% endif %}</div></article>{% endfor %}</div>
+  </section>
+  <section class="panel hotspot-list-panel"><div class="panel-head"><div><h2>本周热点</h2><p>最近 7 天，适合安排进本周内容计划</p></div></div>
+    <div class="hotspot-list">{% for item in payload.weekly %}<article class="hotspot-item"><div class="hotspot-rank week">{{ '%02d'|format(loop.index) }}</div><div><h3>{{ item.topic }}</h3><div class="platform-tags">{% for platform in item.platforms %}<span>{{ platform }}</span>{% endfor %}</div><p>{{ item.trend }}</p><strong>值得关注：{{ item.why_it_matters }}</strong>{% if item.source_urls %}<a href="{{ item.source_urls[0] }}" target="_blank" rel="noopener noreferrer">查看依据</a>{% endif %}</div></article>{% endfor %}</div>
+  </section>
+</div>
+{% endif %}
+
+{% if payload.topics %}
+<section class="topic-section"><div class="topic-section-head"><div><p class="section-note">选题初筛</p><h2>无人机足球可融合方向</h2><p>S 级今天做，A 级本周做，B 级进入选题库。</p></div></div>
+  <div class="topic-grid">{% for item in payload.topics %}<article class="panel topic-card priority-{{ item.priority|lower }}">
+    <div class="topic-card-head"><span class="priority-badge">{{ item.priority }} 级</span><span>{{ item.timeliness }}</span></div>
+    <h3>{{ item.direction }}</h3><p class="topic-hotspot">关联热点：{{ item.hotspot }}</p>
+    <div class="topic-details"><div><span>融合方式</span><p>{{ item.fusion }}</p></div><div><span>优先理由</span><p>{{ item.reason }}</p></div><div><span>推荐形式</span><p>{{ item.format }}</p></div></div>
+    <div class="ready-titles"><strong>可直接使用的标题</strong>{% for title in item.titles %}<div><span>{{ title }}</span><button type="button" class="copy-title" data-copy="{{ title }}">复制</button></div>{% endfor %}</div>
+  </article>{% endfor %}</div>
+</section>
+{% endif %}
+
+{% if payload.sources %}<section class="source-panel panel"><div class="panel-head"><div><h2>参考来源</h2><p>热点会随时间变化，发布前建议再次核对</p></div></div><div>{% for url in payload.sources %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ loop.index }}. {{ url }}</a>{% endfor %}</div></section>{% endif %}
+{% endblock %}

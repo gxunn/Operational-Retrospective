@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}每日数据 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="page-heading metrics-heading">
+  <div>
+    <p class="section-note">数据明细</p>
+    <h1>数据范围与账号对比</h1>
+    <p>一次查看一段时间，并按平台、账号筛选和横向比较。</p>
+  </div>
+</section>
+
+<form class="panel metrics-filter" method="get">
+  <div class="filter-dates">
+    <label>开始日期<input type="date" name="start_date" value="{{ start_date }}"></label>
+    <label>结束日期<input type="date" name="end_date" value="{{ end_date }}"></label>
+  </div>
+  <fieldset>
+    <legend>查看哪些平台 <small>不选代表全部</small></legend>
+    <div class="filter-chips">
+      {% for item in platforms %}
+      <label class="filter-chip"><input type="checkbox" name="platform" value="{{ item }}" {% if item in selected_platforms %}checked{% endif %}><span>{{ item }}</span></label>
+      {% else %}<span class="filter-empty">还没有平台账号</span>{% endfor %}
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>查看哪些账号 <small>不选代表全部</small></legend>
+    <div class="filter-chips">
+      {% for account in accounts %}
+      <label class="filter-chip"><input type="checkbox" name="account_id" value="{{ account.id }}" {% if account.id in selected_account_ids %}checked{% endif %}><span>{{ account.name }}<small>{{ account.platform }}</small></span></label>
+      {% else %}<span class="filter-empty">还没有账号</span>{% endfor %}
+    </div>
+  </fieldset>
+  <div class="filter-actions"><a class="button secondary" href="/metrics">重置</a><button class="button primary">应用筛选</button></div>
+</form>
+
+<div class="range-summary">
+  <div><strong>{{ start_date }}</strong><span>至 {{ end_date }}</span></div>
+  <div><strong>{{ rows|length }}</strong><span>条账号日数据</span></div>
+  <div><strong>{{ (rows|map(attribute='metric_date')|unique|list)|length }}</strong><span>个有数据的日期</span></div>
+</div>
+
+<section class="metrics-strip range-totals" aria-label="筛选范围汇总">
+  {% for field in metrics %}
+  {# 兼容仍在运行的旧版后端：旧上下文没有 totals 时也应正常显示页面。 #}
+  {% set metric_total = totals.get(field, 0) if totals is defined else 0 %}
+  <div class="metric-cell"><span>{{ metric_labels[field] }}</span><strong>{{ '{:,.0f}'.format(metric_total) }}</strong><small>筛选范围合计</small></div>
+  {% endfor %}
+</section>
+
+<section class="panel range-table-panel">
+  <div class="panel-head"><div><h2>范围数据明细</h2><p>按日期倒序，可横向查看每天的所有账号</p></div></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>日期</th><th>平台账号</th>{% for field in metrics %}<th>{{ metric_labels[field] }}</th>{% endfor %}</tr></thead>
+    <tbody>{% for row in rows %}<tr>
+      <td class="date-cell">{{ row.metric_date }}</td>
+      <td class="title-cell"><strong>{{ row.account.platform }}</strong><small>{{ row.account.name }}</small></td>
+      {% for field in metrics %}<td>{{ '{:,.0f}'.format(row|attr(field)) }}</td>{% endfor %}
+    </tr>{% else %}<tr><td colspan="9"><div class="empty-table"><strong>这个范围暂无数据</strong><span>请调整时间、平台或账号筛选条件</span></div></td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section class="comparison-heading">
+  <div><p class="section-note">横向对比</p><h2>同一天的数据对比</h2><p>左侧看同一账号在不同平台的表现，右侧看同一平台下不同账号的表现。</p></div>
+  <form class="inline-form" method="get">
+    <input type="hidden" name="start_date" value="{{ start_date }}"><input type="hidden" name="end_date" value="{{ end_date }}">
+    {% for item in selected_platforms %}<input type="hidden" name="platform" value="{{ item }}">{% endfor %}
+    {% for item in selected_account_ids %}<input type="hidden" name="account_id" value="{{ item }}">{% endfor %}
+    <label>对比日期<input type="date" name="comparison_day" min="{{ start_date }}" max="{{ end_date }}" value="{{ comparison_day }}"></label>
+    <button class="button secondary">更新对比</button>
+  </form>
+</section>
+
+<div class="comparison-grid">
+  <section class="panel comparison-panel">
+    <div class="panel-head"><div><h2>同账号 · 不同平台</h2><p>{{ comparison_day }}，按账号名称分组</p></div></div>
+    {% for group in account_groups %}<div class="comparison-group">
+      <h3>{{ group.name }}</h3>
+      {% for row in group.rows %}<div class="comparison-row">
+        <div><strong>{{ row.account.platform }}</strong><small>播放 {{ '{:,.0f}'.format(row.views) }} · 涨粉 {{ '{:,.0f}'.format(row.followers_new) }} · 点赞 {{ '{:,.0f}'.format(row.likes) }}</small><small>评论 {{ '{:,.0f}'.format(row.comments) }} · 收藏 {{ '{:,.0f}'.format(row.favorites) }} · 转发 {{ '{:,.0f}'.format(row.shares) }} · 线索 {{ '{:,.0f}'.format(row.leads) }}</small></div>
+        <div class="comparison-bar"><i style="width:{{ (row.views / group.max_views * 100) if group.max_views else 0 }}%"></i></div>
+      </div>{% endfor %}
+    </div>{% else %}<div class="empty-inline">当天没有符合筛选条件的数据</div>{% endfor %}
+  </section>
+  <section class="panel comparison-panel">
+    <div class="panel-head"><div><h2>同平台 · 不同账号</h2><p>{{ comparison_day }}，按平台分组</p></div></div>
+    {% for group in platform_groups %}<div class="comparison-group">
+      <h3>{{ group.name }}</h3>
+      {% for row in group.rows %}<div class="comparison-row">
+        <div><strong>{{ row.account.name }}</strong><small>播放 {{ '{:,.0f}'.format(row.views) }} · 涨粉 {{ '{:,.0f}'.format(row.followers_new) }} · 点赞 {{ '{:,.0f}'.format(row.likes) }}</small><small>评论 {{ '{:,.0f}'.format(row.comments) }} · 收藏 {{ '{:,.0f}'.format(row.favorites) }} · 转发 {{ '{:,.0f}'.format(row.shares) }} · 线索 {{ '{:,.0f}'.format(row.leads) }}</small></div>
+        <div class="comparison-bar"><i style="width:{{ (row.views / group.max_views * 100) if group.max_views else 0 }}%"></i></div>
+      </div>{% endfor %}
+    </div>{% else %}<div class="empty-inline">当天没有符合筛选条件的数据</div>{% endfor %}
+  </section>
+</div>
+{% endblock %}

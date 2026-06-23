@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static', path='/favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  <script defer src="{{ url_for('static', path='/app.js') }}"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="/"><span class="brand-rule"></span><span>日拱一卒<small>自媒体复盘</small></span></a>
+      <nav class="nav-list" aria-label="主导航">
+        {% set items = [
+          ('/', '总览', 'chart'), ('/imports/upload', '上传数据', 'upload'), ('/accounts', '账号管理', 'user'),
+          ('/metrics', '每日数据', 'calendar'), ('/hotspots', '每日热点', 'sparkles'), ('/reports', '复盘报告', 'file'),
+          ('/users', '团队成员', 'users'), ('/settings', '系统设置', 'settings')
+        ] %}
+        {% for href, label, icon in items %}
+          {% if label != '团队成员' or user.role == 'admin' %}
+          <a href="{{ href }}" class="nav-item {% if request.url.path == href or (href != '/' and request.url.path.startswith(href)) %}active{% endif %}">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/icons.svg#{{ icon }}"></use></svg><span>{{ label }}</span>
+          </a>
+          {% endif %}
+        {% endfor %}
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-block"><span class="avatar">{{ (user.display_name or user.username)[:1] }}</span><span><strong>{{ user.display_name or user.username }}</strong><small>{{ '管理员' if user.role == 'admin' else '团队成员' }}</small></span></div>
+        <form action="/auth/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" title="退出登录" aria-label="退出登录"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#logout"></use></svg></button></form>
+      </div>
+    </aside>
+    <div class="main-wrap">
+      <header class="mobile-header"><button class="icon-button" type="button" data-menu aria-label="打开菜单"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#menu"></use></svg></button><span>日拱一卒 · 自媒体复盘</span></header>
+      <main class="main-content">
+        {% if message %}<div class="toast" role="status">{{ message }}</div>{% endif %}
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+</body>
+</html>

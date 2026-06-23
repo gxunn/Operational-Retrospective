@@ -1,0 +1,10 @@
+{$DOMAIN:localhost} {
+  reverse_proxy app:8000
+  encode gzip zstd
+  header {
+    X-Content-Type-Options nosniff
+    X-Frame-Options DENY
+    Referrer-Policy strict-origin-when-cross-origin
+  }
+}
+

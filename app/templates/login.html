@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录 · {{ app_name }}</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/styles.css"></head>
+<body class="login-page">
+  <main class="login-panel">
+    <div class="login-brand"><span class="brand-rule"></span><div><strong>日拱一卒</strong><small>自媒体每日复盘</small></div></div>
+    <div class="login-copy"><h1>每天看清一点，<br>内容就会更好一点。</h1><p>登录后台，上传平台数据并生成今日复盘。</p></div>
+    <form class="login-form" method="post" action="/auth/login">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>用户名<input name="username" autocomplete="username" required autofocus></label>
+      <label>密码<input type="password" name="password" autocomplete="current-password" required></label>
+      {% if error %}<p class="form-error">{{ error }}</p>{% endif %}
+      <button class="button primary wide">登录后台</button>
+    </form>
+    <p class="login-help">首次运行默认账号为 admin；请登录后立即修改默认密码。</p>
+  </main>
+  <aside class="login-aside"><div class="quote-mark">“</div><p>复盘不是为了责备昨天，<br>而是为了让明天更有方向。</p><span>每日 10:00 · 自动汇总 · 中文建议</span></aside>
+</body></html>

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}总览 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="page-heading dashboard-heading">
+  <div><p class="date-line">{{ target.strftime('%Y年%m月%d日') }}</p><h1>早上好，今天也把内容做得更好</h1></div>
+  <div class="heading-actions"><span class="schedule-note"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#clock"></use></svg>今日日报将在 <strong>{{ report_hour }}</strong> 自动生成</span><a class="button primary" href="/imports/upload"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#upload"></use></svg>上传今日数据</a></div>
+</section>
+
+<section class="metrics-strip" aria-label="核心指标">
+  {% for field in ['followers_new','views','likes','comments','favorites','shares','leads'] %}
+  {% set value = stats.current[field] %}{% set previous = stats.previous[field] %}
+  <div class="metric-cell"><span>{{ metric_labels[field] }}</span><strong>{{ '{:,.0f}'.format(value) }}</strong><small class="{% if value >= previous %}positive{% else %}negative{% endif %}">{{ '↑' if value >= previous else '↓' }} {% if previous %}{{ '{:.1f}'.format((value-previous)/previous*100)|replace('-','') }}%{% else %}—{% endif %} 较前日</small></div>
+  {% endfor %}
+</section>
+
+<div class="dashboard-grid">
+  <section class="panel trend-panel">
+    <div class="panel-head"><div><h2>近 7 天数据趋势</h2><p>播放量变化</p></div></div>
+    {% set max_view = trends|map(attribute='views')|max or 1 %}
+    <div class="bar-chart" aria-label="近七天播放量柱状图">
+      {% for item in trends %}<div class="bar-item"><span class="bar-value">{{ '{:,.0f}'.format(item.views) }}</span><div class="bar-track"><div class="bar" style="height: {{ [item.views / max_view * 100, 3]|max }}%"></div></div><small>{{ item.date }}</small></div>{% endfor %}
+    </div>
+  </section>
+  <section class="panel platform-panel">
+    <div class="panel-head"><div><h2>各平台数据概览</h2><p>{{ target.strftime('%m月%d日') }}</p></div><a href="/metrics">查看明细</a></div>
+    <div class="platform-list">
+      {% for row in account_rows %}
+      <div class="platform-row"><span class="platform-mark p-{{ row.account.platform }}">{{ row.account.platform[:1] }}</span><div class="platform-name"><strong>{{ row.account.platform }}</strong><small>{{ row.account.name }}</small></div><div><small>播放量</small><strong>{{ '{:,.0f}'.format(row.metric.views if row.metric else 0) }}</strong></div><div><small>新增粉丝</small><strong>{{ '{:,.0f}'.format(row.metric.followers_new if row.metric else 0) }}</strong></div></div>
+      {% else %}<div class="empty-inline">还没有平台账号，<a href="/accounts">先添加一个</a></div>{% endfor %}
+    </div>
+  </section>
+</div>
+
+<section class="panel content-panel">
+  <div class="panel-head"><div><h2>内容表现</h2><p>按播放量排序</p></div><a href="/metrics">查看每日数据</a></div>
+  <div class="table-wrap"><table><thead><tr><th>内容</th><th>平台</th><th>播放量</th><th>互动率</th><th>表现</th></tr></thead><tbody>
+  {% for item in contents %}{% set rate = (item.likes+item.comments+item.favorites+item.shares)/item.views if item.views else 0 %}<tr><td class="title-cell">{{ item.title }}</td><td>{{ item.account.platform }}</td><td>{{ '{:,.0f}'.format(item.views) }}</td><td>{{ '{:.2%}'.format(rate) }}</td><td><span class="performance {% if rate >= 0.05 %}good{% elif rate >= 0.02 %}normal{% else %}low{% endif %}">{{ '优秀' if rate >= 0.05 else ('良好' if rate >= 0.02 else '待提升') }}</span></td></tr>
+  {% else %}<tr><td colspan="5"><div class="empty-table"><strong>还没有内容数据</strong><span>上传带有“内容标题”的平台表格后，这里会自动出现排名。</span><a href="/imports/upload">上传数据</a></div></td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}
