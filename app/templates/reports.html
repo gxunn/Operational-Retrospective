@@ -1,3 +1,61 @@
 {% extends "base.html" %}{% block title %}复盘报告 · {{ app_name }}{% endblock %}
-{% block content %}<section class="page-heading"><div><p class="section-note">行动建议</p><h1>每日复盘报告</h1><p>每天 10 点自动生成，也可以指定日期手动生成。</p></div><form class="inline-form" method="post" action="/reports/generate"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="date" name="report_date"><button class="button primary">生成日报</button></form></section><section class="report-list">{% for report in reports %}<a class="report-row" href="/reports/{{ report.id }}"><time><strong>{{ report.report_date.strftime('%d') }}</strong><span>{{ report.report_date.strftime('%Y.%m') }}</span></time><div><h2>{{ report.report_date }} 自媒体每日复盘</h2><p>{{ 'AI 分析有提示：' + report.ai_error if report.ai_error else '数据概览、内容表现与明日行动建议' }}</p></div><span class="status-dot {{ 'on' if report.status == 'generated' else 'wait' }}">{{ '生成完成' if report.status == 'generated' else '数据版' }}</span><svg viewBox="0 0 24 24"><use href="/static/icons.svg#chevron"></use></svg></a>{% else %}<div class="empty-state"><span class="red-rule"></span><h2>还没有日报</h2><p>上传数据后，点击“生成日报”即可得到第一份复盘。</p></div>{% endfor %}</section>{% endblock %}
-
+{% block content %}
+<section class="page-heading">
+  <div><p class="section-note">行动建议</p><h1>复盘报告</h1><p>支持生成日报，并维护历史报告名称与删除操作。</p></div>
+  <div class="heading-actions">
+    {% if permissions.manage_reports %}
+    <form class="inline-form" method="post" action="/reports/generate">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="date" name="report_date">
+      <button class="button primary">生成日报</button>
+    </form>
+    <form class="inline-form" method="post" action="/reports/generate-summary">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="date" name="report_date">
+      <input type="hidden" name="period_type" value="weekly">
+      <button class="button secondary">生成周报</button>
+    </form>
+    <form class="inline-form" method="post" action="/reports/generate-summary">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="date" name="report_date">
+      <input type="hidden" name="period_type" value="monthly">
+      <button class="button secondary">生成月报</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+<section class="report-list">
+  {% for report in reports %}
+  <div class="report-row">
+    <a href="/reports/{{ report.id }}"><time><strong>{{ report.report_date.strftime('%d') }}</strong><span>{{ report.report_date.strftime('%Y.%m') }}</span></time></a>
+    <div><h2>{{ report.title or (report.report_date ~ ' 自媒体复盘') }}</h2><p>{{ 'AI 分析有提示：' + report.ai_error if report.ai_error else '数据概览、内容表现与下周建议' }}</p></div>
+    <span class="status-dot {{ 'on' if report.status == 'generated' else 'wait' }}">{{ '生成完成' if report.status == 'generated' else '数据版' }}</span>
+    {% if permissions.manage_reports %}
+    <form method="post" action="/reports/{{ report.id }}/rename" class="inline-form compact-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="title" value="{{ report.title }}" placeholder="重命名报告"><button class="text-button">保存</button></form>
+    {% endif %}
+    {% if permissions.delete_data %}
+    <form method="post" action="/reports/{{ report.id }}/delete" data-confirm="确认删除这份报告吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">删除</button></form>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="empty-state"><span class="red-rule"></span><h2>还没有日报</h2><p>上传数据后，点击“生成日报”即可得到第一份复盘。</p></div>
+  {% endfor %}
+</section>
+<section class="report-list u-mt-24">
+  {% for report in summary_reports %}
+  <div class="report-row">
+    <a href="/summary-reports/{{ report.id }}"><time><strong>{{ report.end_date.strftime('%d') }}</strong><span>{{ report.end_date.strftime('%Y.%m') }}</span></time></a>
+    <div><h2>{{ report.title }}</h2><p>{{ report.start_date }} 至 {{ report.end_date }} · {{ 'AI 分析有提示：' + report.ai_error if report.ai_error else '周期数据总结、问题诊断与后续建议' }}</p></div>
+    <span class="status-dot {{ 'on' if report.status == 'generated' else 'wait' }}">{{ '生成完成' if report.status == 'generated' else '数据版' }}</span>
+    {% if permissions.manage_reports %}
+    <form method="post" action="/summary-reports/{{ report.id }}/rename" class="inline-form compact-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="title" value="{{ report.title }}" placeholder="重命名报告"><button class="text-button">保存</button></form>
+    {% endif %}
+    {% if permissions.delete_data %}
+    <form method="post" action="/summary-reports/{{ report.id }}/delete" data-confirm="确认删除这份报告吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">删除</button></form>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="empty-inline">还没有周报或月报</div>
+  {% endfor %}
+</section>
+{% endblock %}

@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}爆款拆解 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="page-heading breakdown-hero">
+  <div>
+    <h1>爆款拆解</h1>
+    <p class="breakdown-subtitle">分析爆款内容结构并生成拆解报告</p>
+  </div>
+  <div class="heading-actions">
+    <span class="schedule-note u-inline">拆解进度 <strong>{{ breakdown_stats.progress if breakdown_stats else 18 }}%</strong></span>
+    <span class="schedule-note u-inline">AI 分析 <strong>{{ breakdown_stats.analysis_status if breakdown_stats else '等待首条拆解' }}</strong></span>
+    <span class="schedule-note u-inline">预计完成 <strong>{{ breakdown_stats.eta if breakdown_stats else '预计 1 分钟' }}</strong></span>
+  </div>
+</section>
+
+<section class="breakdown-metrics">
+  <div class="breakdown-metric">
+    <span>拆解案例</span>
+    <strong>{{ breakdown_stats.total_cases if breakdown_stats else cases|length }}</strong>
+    <small>最近保存的爆款拆解</small>
+  </div>
+  <div class="breakdown-metric">
+    <span>平均播放量</span>
+    <strong>{{ '{:,.0f}'.format(breakdown_stats.avg_views if breakdown_stats else 0) }}</strong>
+    <small>用于判断内容基线</small>
+  </div>
+  <div class="breakdown-metric">
+    <span>拆解进度</span>
+    <strong>{{ breakdown_stats.progress if breakdown_stats else 18 }}%</strong>
+    <small>模拟 AI 处理状态</small>
+  </div>
+  <div class="breakdown-metric">
+    <span>最近更新时间</span>
+    <strong>{{ cases[0].created_at.strftime('%m-%d %H:%M') if cases else '暂无' }}</strong>
+    <small>最新一次拆解记录</small>
+  </div>
+</section>
+
+<div class="breakdown-layout breakdown-shell">
+  <section class="panel form-panel breakdown-form-shell">
+    <div class="panel-head">
+      <div>
+        <h2>生成拆解</h2>
+        <p>按视频链接、标题和基础数据生成结构化分析</p>
+      </div>
+    </div>
+    <form method="post" action="/breakdown/generate" class="breakdown-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>视频链接
+        <input name="source_url" placeholder="https://">
+      </label>
+      <label>标题
+        <input name="title" placeholder="视频标题">
+      </label>
+      <label>平台
+        <select name="platform">
+          <option>抖音</option>
+          <option>小红书</option>
+          <option>视频号</option>
+          <option>公众号</option>
+          <option>其他自定义平台</option>
+        </select>
+      </label>
+      <div class="field-grid">
+        <label>播放量<input name="views" type="number" step="1" value="0"></label>
+        <label>点赞<input name="likes" type="number" step="1" value="0"></label>
+        <label>评论<input name="comments" type="number" step="1" value="0"></label>
+      </div>
+      <label>视频时长
+        <input name="duration" placeholder="15s / 3min">
+      </label>
+      <label>封面描述
+        <textarea name="cover_description" rows="3" placeholder="封面传达了什么"></textarea>
+      </label>
+      <label>文案 / 口播
+        <textarea name="script_content" rows="5" placeholder="粘贴脚本或口播内容"></textarea>
+      </label>
+      <div class="action-row">
+        <button class="button primary">生成拆解</button>
+        <button class="button secondary" type="reset">重置</button>
+      </div>
+    </form>
+  </section>
+
+  <aside class="breakdown-aside">
+    <section class="panel breakdown-status-panel">
+      <div class="panel-head">
+        <div>
+          <h2>拆解状态</h2>
+          <p>用于展示 AI 处理与运营进度</p>
+        </div>
+      </div>
+      <div class="status-rail">
+        <div class="status-rail-item">
+          <span>AI 分析状态</span>
+          <strong>{{ breakdown_stats.analysis_status if breakdown_stats else '等待首条拆解' }}</strong>
+          <small>当前为 mock 逻辑，后续可直接接真实 AI 接口</small>
+        </div>
+        <div class="status-rail-item">
+          <span>预计完成时间</span>
+          <strong>{{ breakdown_stats.eta if breakdown_stats else '预计 1 分钟' }}</strong>
+          <small>根据拆解数量自动调整</small>
+        </div>
+        <div class="status-rail-item">
+          <span>拆解进度</span>
+          <strong>{{ breakdown_stats.progress if breakdown_stats else 18 }}%</strong>
+          <small>完成后会自动保存到案例库</small>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>案例库检索</h2>
+          <p>搜索、筛选、查看最近保存的拆解</p>
+        </div>
+      </div>
+      <form class="case-toolbar" method="get" action="/breakdown">
+        <input name="q" value="{{ q }}" placeholder="搜索标题、平台、封面描述">
+        <select name="platform">
+          <option value="">全部平台</option>
+          {% for item in ['抖音','小红书','视频号','公众号','其他自定义平台'] %}
+          <option value="{{ item }}" {% if selected_platform == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+        <button class="button secondary">筛选</button>
+      </form>
+      <div class="case-list">
+        {% for item in recent_cases %}
+        <article class="case-card">
+          <div class="case-card-head">
+            <div>
+              <h3>{{ item.title or '未命名爆款' }}</h3>
+              <p>{{ item.platform or '未填写平台' }} · {{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+            </div>
+            {% if item.source_url %}<a class="table-link" href="{{ item.source_url }}" target="_blank" rel="noopener noreferrer">原链接</a>{% endif %}
+          </div>
+          <div class="case-meta">
+            <span>播放 {{ '{:,.0f}'.format(item.views or 0) }}</span>
+            <span>点赞 {{ '{:,.0f}'.format(item.likes or 0) }}</span>
+            <span>评论 {{ '{:,.0f}'.format(item.comments or 0) }}</span>
+            <span>时长 {{ item.duration or '未知' }}</span>
+          </div>
+        </article>
+        {% else %}
+        <div class="case-empty">
+          <div>
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <circle cx="60" cy="60" r="46" fill="#fff1f1"></circle>
+              <path d="M38 52h44M38 66h28M48 40h22" stroke="currentColor" stroke-width="6" stroke-linecap="round"></path>
+              <rect x="42" y="74" width="36" height="18" rx="9" fill="currentColor" opacity=".12"></rect>
+            </svg>
+            <h3>暂无拆解案例</h3>
+            <p>开始创建第一条拆解报告</p>
+            <button class="button primary" type="button" onclick="document.querySelector('.breakdown-form input[name=source_url]')?.focus()">创建第一条拆解</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+  </aside>
+</div>
+
+<section class="panel u-mt-24">
+  <div class="panel-head">
+    <div>
+      <h2>热门拆解排行榜</h2>
+      <p>按播放量排序，帮助快速复盘高价值内容</p>
+    </div>
+  </div>
+  <div class="ranking-list">
+    {% for item in hot_rankings %}
+    <div class="ranking-item">
+      <div>
+        <strong>{{ item.title or '未命名爆款' }}</strong>
+        <small>{{ item.platform or '未填写平台' }} · {{ item.created_at.strftime('%m-%d %H:%M') }}</small>
+      </div>
+      <span class="status-dot on">{{ '{:,.0f}'.format(item.views or 0) }} 播放</span>
+    </div>
+    {% else %}
+    <div class="empty-inline">还没有排行榜数据</div>
+    {% endfor %}
+  </div>
+</section>
+
+{% if report %}
+<section class="panel report-paper u-mt-24">
+  <h1>{{ report.title or '爆款拆解报告' }}</h1>
+  {% if report_data %}
+  <div class="v2-summary-grid">
+    <div class="v2-summary-card">
+      <span>标题结构</span>
+      <strong>{{ report_data.template }}</strong>
+      <small>适合复用的标题骨架</small>
+    </div>
+    <div class="v2-summary-card">
+      <span>AI 分析状态</span>
+      <strong>{{ '%.2f'|format(report_data.ratio) }}%</strong>
+      <small>互动率参考值</small>
+    </div>
+  </div>
+  <h2>标题结构</h2>
+  <div class="report-copy">{% for line in report_data.title_structure %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <h2>前3秒钩子</h2>
+  <div class="report-copy">{% for line in report_data.hook %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <h2>情绪节奏</h2>
+  <div class="report-copy">{% for line in report_data.rhythm %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <h2>卖点表达</h2>
+  <div class="report-copy">{% for line in report_data.selling_point %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <h2>转化设计</h2>
+  <div class="report-copy">{% for line in report_data.conversion %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <h2>可复用模板</h2>
+  <div class="report-copy">{{ report_data.template }}</div>
+  <h2>可延伸选题</h2>
+  <div class="report-copy">{% for line in report_data.extension_topics %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  {% else %}
+  <h2>完整分析</h2>
+  <pre class="report-pre">{{ report.analysis_json }}</pre>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

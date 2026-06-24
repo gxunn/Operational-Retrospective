@@ -6,16 +6,17 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import settings
 from ..models import EmailRecipient, Report
+from .runtime import runtime_settings
 
 
 def send_report_email(db: Session, report: Report) -> int:
     recipients = db.scalars(select(EmailRecipient).where(EmailRecipient.is_active.is_(True))).all()
     if not recipients:
         raise ValueError("还没有配置启用的收件邮箱")
+    settings = runtime_settings(db)
     if not settings.smtp_host or not settings.smtp_username or not settings.smtp_password:
-        raise ValueError("SMTP 尚未在 .env 中配置完整")
+        raise ValueError("SMTP 尚未在系统设置中配置完整")
     sender = settings.mail_from or settings.smtp_username
     message = EmailMessage()
     message["Subject"] = f"{report.report_date} 自媒体每日复盘"
@@ -34,4 +35,3 @@ def send_report_email(db: Session, report: Report) -> int:
         server.send_message(message)
     report.emailed_at = datetime.now().replace(microsecond=0)
     return len(recipients)
-

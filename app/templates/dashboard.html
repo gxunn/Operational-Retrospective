@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}总览 · {{ app_name }}{% endblock %}
+{% block title %}首页仪表盘 · {{ app_name }}{% endblock %}
 {% block content %}
 <div class="dashboard-topbar">
   <span class="dashboard-date"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#calendar"></use></svg>{{ target.strftime('%Y年%-m月%-d日') }}&nbsp;&nbsp;{{ target_weekday }}</span>
   <span class="schedule-note"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#clock"></use></svg>今日日报将在 <strong>{{ report_hour }}</strong> 自动生成</span>
 </div>
 <section class="page-heading dashboard-heading">
-  <div><h1>早上好，今天也把内容做得更好</h1></div>
+  <div><h1>总览</h1><p>继续沿用现有复盘风格，但把运营动作拆得更细、更可执行。</p></div>
   <div class="heading-actions"><a class="button primary" href="/imports/upload"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#upload"></use></svg>上传今日数据</a></div>
 </section>
 
@@ -28,8 +28,13 @@
         <polyline points="{% for item in trends %}{{ item.x }},{{ item.y }} {% endfor %}" fill="none" stroke="#e92127" stroke-width="1.15" vector-effect="non-scaling-stroke"/>
         {% for item in trends %}<circle cx="{{ item.x }}" cy="{{ item.y }}" r="1.7" fill="white" stroke="#e92127" stroke-width="1" vector-effect="non-scaling-stroke"/>{% endfor %}
       </svg>
-      <div class="trend-values">{% for item in trends %}<span style="left:{{ item.x }}%;top:{{ item.y - 9 }}%">{{ '{:,.0f}'.format(item.views) }}</span>{% endfor %}</div>
+      <div class="trend-values">{% for item in trends %}<span class="trend-label" data-x="{{ item.x }}" data-y="{{ item.y - 9 }}">{{ '{:,.0f}'.format(item.views) }}</span>{% endfor %}</div>
       <div class="trend-dates">{% for item in trends %}<span>{{ item.date }}</span>{% endfor %}</div>
+    </div>
+    <div class="trend-insights">
+      <span class="pill">播放量：{{ forecast_views.trend }}</span>
+      <span class="pill">涨粉：{{ forecast_followers.trend }}</span>
+      <span class="pill">预计下一期 {{ '{:,.0f}'.format(forecast_views.next) }}</span>
     </div>
   </section>
   <section class="panel platform-panel">
@@ -42,11 +47,54 @@
   </section>
 </div>
 
+<div class="range-summary">
+  <div><strong>{{ '{:,.0f}'.format(forecast_views.next) }}</strong><span>预计下一期播放量</span></div>
+  <div><strong>{{ forecast_views.trend }}</strong><span>播放量趋势</span></div>
+  <div><strong>{{ forecast_followers.trend }}</strong><span>涨粉趋势</span></div>
+</div>
+
 <section class="panel content-panel">
   <div class="panel-head"><h2>内容表现 Top 10</h2><a href="/metrics">查看更多 ›</a></div>
-  <div class="table-wrap"><table><thead><tr><th>内容</th><th>平台</th><th>播放量</th><th>互动率</th><th>表现</th></tr></thead><tbody>
-  {% for item in contents %}{% set rate = (item.likes+item.comments+item.favorites+item.shares)/item.views if item.views else 0 %}<tr><td class="title-cell">{{ item.title }}</td><td>{{ item.account.platform }}</td><td>{{ '{:,.0f}'.format(item.views) }}</td><td>{{ '{:.2%}'.format(rate) }}</td><td><span class="performance {% if rate >= 0.05 %}good{% elif rate >= 0.02 %}normal{% else %}low{% endif %}">{{ '优秀' if rate >= 0.05 else ('良好' if rate >= 0.02 else '待提升') }}</span></td></tr>
-  {% else %}<tr><td colspan="5"><div class="empty-table"><strong>还没有内容数据</strong><span>上传带有“内容标题”的平台表格后，这里会自动出现排名。</span><a href="/imports/upload">上传数据</a></div></td></tr>{% endfor %}
-  </tbody></table></div>
+  <div class="content-list">
+  {% for item in contents %}
+  {% set rate = (item.likes+item.comments+item.favorites+item.shares)/item.views if item.views else 0 %}
+  <a class="content-row" href="/metrics">
+    <div class="content-main">
+      <p class="content-title">{{ item.title }}</p>
+      <div class="content-meta">
+        <span class="platform-tag">{{ item.account.platform }}</span>
+      </div>
+    </div>
+    <div class="content-metrics">
+      <span><small>播放量</small><strong>{{ '{:,.0f}'.format(item.views) }}</strong></span>
+      <span><small>互动率</small><strong>{{ '{:.2%}'.format(rate) }}</strong></span>
+      <span><small>表现状态</small><strong><span class="status-pill {% if rate >= 0.05 %}good{% elif rate >= 0.02 %}normal{% else %}low{% endif %}">{{ '优秀' if rate >= 0.05 else ('良好' if rate >= 0.02 else '待提升') }}</span></strong></span>
+    </div>
+  </a>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-table">
+      <strong>还没有内容数据</strong>
+      <span>上传带有“内容标题”的平台表格后，这里会自动出现排名。</span>
+      <a href="/imports/upload">上传数据</a>
+    </div>
+  </div>
+  {% endfor %}
+  </div>
+</section>
+
+<section class="panel u-mt-24">
+  <div class="panel-head"><div><h2>异常提醒</h2><p>自动对比过去 7 天平均值</p></div></div>
+  <div class="alert-feed">
+    {% for item in anomalies %}
+    <article class="alert-card">
+      <h3>{{ item.account }} · {{ '播放量' if item.metric == 'views' else '涨粉' }}</h3>
+      <p>当前值 {{ '{:,.0f}'.format(item.current) }}，对比值 {{ '{:,.0f}'.format(item.current / (1 + item.change / 100)) if item.change else '{:,.0f}'.format(item.current) }}，变化幅度 {{ '{:.1f}'.format(item.change|abs) }}% {{ '上升' if item.change > 0 else '下降' }}</p>
+      <p class="suggestion">建议：{{ item.suggestion }}</p>
+    </article>
+    {% else %}
+    <div class="empty-inline">最近没有明显异常波动</div>
+    {% endfor %}
+  </div>
 </section>
 {% endblock %}

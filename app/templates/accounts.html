@@ -1,7 +1,154 @@
-{% extends "base.html" %}{% block title %}账号管理 · {{ app_name }}{% endblock %}
+{% extends "base.html" %}
+{% block title %}账号管理 · {{ app_name }}{% endblock %}
 {% block content %}
-<section class="page-heading"><div><p class="section-note">数据来源</p><h1>平台账号管理</h1><p>同一个平台可以添加多个矩阵账号。</p></div></section>
-<div class="two-column"><section class="panel form-panel"><h2>添加平台账号</h2><form method="post" action="/accounts" class="stack-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>平台<select name="platform" required>{% for platform in platforms %}<option>{{ platform }}</option>{% endfor %}</select></label><label>账号名称<input name="name" placeholder="例如：品牌主账号" required></label><label>平台账号 ID（选填）<input name="external_id" placeholder="用于备注和核对"></label><button class="button primary">保存账号</button></form></section>
-<section class="panel list-panel"><div class="panel-head"><div><h2>已添加账号</h2><p>共 {{ accounts|length }} 个</p></div></div><div class="simple-list">{% for account in accounts %}<div class="simple-row"><span class="platform-mark">{{ account.platform[:1] }}</span><div><strong>{{ account.name }}</strong><small>{{ account.platform }}{% if account.external_id %} · {{ account.external_id }}{% endif %}</small></div><span class="status-dot {{ 'on' if account.is_active else 'off' }}">{{ '启用' if account.is_active else '停用' }}</span>{% if user.role == 'admin' %}<form method="post" action="/accounts/{{ account.id }}/toggle"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">{{ '停用' if account.is_active else '启用' }}</button></form>{% endif %}</div>{% else %}<div class="empty-inline">暂时没有账号</div>{% endfor %}</div></section></div>
-{% endblock %}
+<section class="page-heading">
+  <div>
+    <p class="section-note">平台账号管理</p>
+    <h1>{% if in_trash %}账号回收站{% else %}平台账号管理{% endif %}</h1>
+    <p>{% if in_trash %}仅超级管理员可恢复或彻底删除。{% else %}支持新增多个平台账号、同步占位按钮和批量管理。{% endif %}</p>
+  </div>
+  <div class="heading-actions">
+    {% if not in_trash %}<a class="button secondary" href="/accounts/trash">查看回收站</a>{% endif %}
+    {% if in_trash %}<a class="button secondary" href="/accounts">返回账号列表</a>{% endif %}
+  </div>
+</section>
 
+{% if not in_trash %}
+<div class="two-column">
+  <section class="panel form-panel">
+    <h2>添加平台账号</h2>
+    {% if can_manage_accounts %}
+    <form method="post" action="/accounts" class="stack-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>平台
+        <select name="platform" required>
+          {% for platform in platforms %}<option>{{ platform }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>账号名称<input name="name" placeholder="例如：品牌主账号" required></label>
+      <label>账号ID<input name="external_id" placeholder="平台账号 ID"></label>
+      <label>负责人<input name="manager_name" placeholder="运营负责人"></label>
+      <label>账号定位<textarea name="positioning" rows="3" placeholder="账号定位、内容方向、目标人群"></textarea></label>
+      <label>数据获取方式
+        <select name="data_source">
+          <option value="manual">手动上传</option>
+          <option value="api">API对接</option>
+          <option value="semi_auto">半自动录入</option>
+        </select>
+      </label>
+      <label>账号状态
+        <select name="is_active">
+          <option value="on">启用</option>
+          <option value="off">停用</option>
+        </select>
+      </label>
+      <button class="button primary">保存账号</button>
+    </form>
+    {% else %}
+    <div class="empty-inline">当前账号只能查看账号列表，不能新增或修改平台账号。</div>
+    {% endif %}
+    <hr>
+    <h2>批量导入</h2>
+    {% if can_manage_accounts %}
+    <form method="post" action="/accounts/import" enctype="multipart/form-data" class="stack-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>上传模板<input type="file" name="file" accept=".csv,.xlsx,.xls" required></label>
+      <button class="button secondary">导入账号模板</button>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="panel list-panel">
+    <div class="panel-head"><div><h2>已添加账号</h2><p>共 {{ accounts|length }} 个</p></div></div>
+    <form class="panel-head" method="get" action="/accounts">
+      <input name="q" value="{{ search }}" placeholder="搜索名称、账号 ID、负责人">
+      <select name="platform">
+        <option value="">全部平台</option>
+        {% for item in platforms %}<option value="{{ item }}" {% if item == selected_platform %}selected{% endif %}>{{ item }}</option>{% endfor %}
+      </select>
+      <button class="button secondary">筛选</button>
+    </form>
+    {% if can_manage_accounts %}
+    <form class="panel-head" method="post" action="/accounts/bulk" data-confirm="确认对这些账号执行批量操作吗？">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input name="account_ids" placeholder="输入账号 ID，逗号分隔，例如 1,2,3">
+      <select name="action">
+        <option value="enable">批量启用</option>
+        <option value="disable">批量停用</option>
+        <option value="delete">批量删除</option>
+      </select>
+      <button class="button secondary">执行</button>
+    </form>
+    {% endif %}
+    <div class="simple-list">
+      {% for account in accounts %}
+      <div class="simple-row vertical-row">
+        <div class="row-main">
+          <span class="platform-mark p-{{ account.platform }}">{{ account.platform[:1] }}</span>
+          <div>
+            <strong>{{ account.name }}</strong>
+            <small>ID #{{ account.id }} · {{ account.platform }}{% if account.external_id %} · {{ account.external_id }}{% endif %}</small>
+            <small>负责人：{{ account.manager_name or '未填写' }} · {{ account.positioning or '未填写定位' }}</small>
+            <small>数据方式：{{ {'manual':'手动上传','api':'API对接','semi_auto':'半自动录入'}.get(account.data_source, account.data_source) }}</small>
+            <small>上次同步：{{ account.last_synced_at.strftime('%Y-%m-%d %H:%M') if account.last_synced_at else '尚未同步' }}</small>
+          </div>
+          <span class="status-dot {{ 'on' if account.is_active else 'off' }}">{{ '启用' if account.is_active else '停用' }}</span>
+        </div>
+        <div class="row-actions">
+          {% if can_manage_accounts %}
+          <form method="post" action="/accounts/{{ account.id }}/edit" class="inline-form compact-form">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <select name="platform">{% for item in platforms %}<option value="{{ item }}" {% if item == account.platform %}selected{% endif %}>{{ item }}</option>{% endfor %}</select>
+            <input name="name" value="{{ account.name }}" placeholder="名称">
+            <input name="external_id" value="{{ account.external_id }}" placeholder="平台 ID">
+            <input name="manager_name" value="{{ account.manager_name }}" placeholder="负责人">
+            <input name="positioning" value="{{ account.positioning }}" placeholder="账号定位">
+            <select name="data_source">
+              <option value="manual" {% if account.data_source == 'manual' %}selected{% endif %}>手动上传</option>
+              <option value="api" {% if account.data_source == 'api' %}selected{% endif %}>API对接</option>
+              <option value="semi_auto" {% if account.data_source == 'semi_auto' %}selected{% endif %}>半自动录入</option>
+            </select>
+            <button class="text-button">保存</button>
+          </form>
+          <form method="post" action="/accounts/{{ account.id }}/toggle">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="text-button">{{ '停用' if account.is_active else '启用' }}</button>
+          </form>
+          <form method="post" action="/accounts/{{ account.id }}/sync" data-confirm="确认同步这条账号数据吗？">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="text-button">自动同步数据</button>
+          </form>
+          <form method="post" action="/accounts/{{ account.id }}/delete" data-confirm="确认将该账号放入回收站吗？">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="text-button">删除</button>
+          </form>
+          {% else %}
+          <span class="text-chip">只读</span>
+          {% endif %}
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-inline">暂时没有账号</div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% else %}
+<section class="panel">
+  <div class="simple-list">
+    {% for account in accounts %}
+    <div class="simple-row">
+      <span class="platform-mark">{{ account.platform[:1] }}</span>
+      <div><strong>{{ account.name }}</strong><small>{{ account.platform }}{% if account.external_id %} · {{ account.external_id }}{% endif %}</small></div>
+      {% if can_manage_accounts %}
+      <form method="post" action="/accounts/{{ account.id }}/restore"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">恢复</button></form>
+      <form method="post" action="/accounts/{{ account.id }}/purge" data-confirm="确认彻底删除该账号吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">彻底删除</button></form>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="empty-inline">回收站为空</div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -13,7 +13,7 @@ openai==1.82.0
 python-dotenv==1.1.0
 markdown==3.8
 weasyprint==65.1
+reportlab==4.2.2
 email-validator==2.2.0
 pytest==8.3.5
 httpx==0.28.1
-

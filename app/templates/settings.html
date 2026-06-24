@@ -1,2 +1,108 @@
 {% extends "base.html" %}{% block title %}系统设置 · {{ app_name }}{% endblock %}
-{% block content %}<section class="page-heading"><div><p class="section-note">运行配置</p><h1>系统设置</h1><p>密钥只从服务器的 .env 读取，页面不会显示密钥内容。</p></div></section><div class="settings-grid"><section class="panel"><h2>服务状态</h2><div class="config-list"><div><span>OpenAI API</span><strong class="{{ 'positive' if config_status.openai else 'negative' }}">{{ '已配置' if config_status.openai else '未配置' }}</strong></div><div><span>邮件 SMTP</span><strong class="{{ 'positive' if config_status.smtp else 'negative' }}">{{ '已配置' if config_status.smtp else '未配置' }}</strong></div><div><span>日报时间</span><strong>{{ '%02d:%02d'|format(settings.report_hour, settings.report_minute) }} · {{ settings.app_timezone }}</strong></div><div><span>热点时间</span><strong>{{ '%02d:%02d'|format(settings.hotspot_hour, settings.hotspot_minute) }} · {{ settings.app_timezone }}</strong></div><div><span>安全 Cookie</span><strong>{{ '已开启' if config_status.secure else '本地模式' }}</strong></div></div></section><section class="panel"><h2>修改我的密码</h2><form method="post" action="/users/password" class="stack-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><label>当前密码<input type="password" name="current_password" required></label><label>新密码<input type="password" name="new_password" minlength="8" required></label><button class="button secondary">修改密码</button></form></section>{% if user.role == 'admin' %}<section class="panel recipient-panel"><div class="panel-head"><div><h2>日报收件人</h2><p>启用的邮箱会收到每日 PDF 报告。</p></div></div><form method="post" action="/settings/recipients" class="inline-form recipient-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="name" placeholder="姓名（选填）"><input type="email" name="email" placeholder="name@example.com" required><button class="button primary">添加</button></form><div class="simple-list">{% for recipient in recipients %}<div class="simple-row"><span class="avatar">{{ (recipient.name or recipient.email)[:1]|upper }}</span><div><strong>{{ recipient.name or '未命名' }}</strong><small>{{ recipient.email }}</small></div><span class="status-dot {{ 'on' if recipient.is_active else 'off' }}">{{ '接收中' if recipient.is_active else '已停用' }}</span><form method="post" action="/settings/recipients/{{ recipient.id }}/toggle"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">{{ '停用' if recipient.is_active else '启用' }}</button></form></div>{% else %}<div class="empty-inline">还没有收件邮箱</div>{% endfor %}</div></section>{% endif %}</div>{% endblock %}
+{% block content %}
+<section class="page-heading"><div><p class="section-note">运行配置</p><h1>系统设置</h1><p>支持在前端维护 API Key、SMTP、时区、定时任务和外观偏好。</p></div></section>
+<div class="settings-grid">
+  <section class="panel">
+    <h2>服务状态</h2>
+    <div class="config-list">
+      <div><span>OpenAI API</span><strong class="{{ 'positive' if config_status.openai else 'negative' }}">{{ '已配置' if config_status.openai else '未配置' }}</strong></div>
+      <div><span>邮件 SMTP</span><strong class="{{ 'positive' if config_status.smtp else 'negative' }}">{{ '已配置' if config_status.smtp else '未配置' }}</strong></div>
+      <div><span>日报时间</span><strong>{{ '%02d:%02d'|format(settings.report_hour, settings.report_minute) }} · {{ settings.app_timezone }}</strong></div>
+      <div><span>热点时间</span><strong>{{ '%02d:%02d'|format(settings.hotspot_hour, settings.hotspot_minute) }} · {{ settings.app_timezone }}</strong></div>
+      <div><span>外观模式</span><strong>{{ '深色' if appearance.theme == 'dark' else '浅色' }} · {{ appearance.font_scale }}%</strong></div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>修改我的密码</h2>
+    <form method="post" action="/users/password" class="stack-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>当前密码<input type="password" name="current_password" required></label>
+      <label>新密码<input type="password" name="new_password" minlength="8" required></label>
+      <button class="button secondary">修改密码</button>
+    </form>
+  </section>
+  {% if permissions.manage_settings %}
+  <section class="panel recipient-panel">
+    <div class="panel-head"><div><h2>运行参数</h2><p>敏感信息加密存储，未重新填写的密码类字段会保留原值。</p></div></div>
+    <form method="post" action="/settings/general" class="stack-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>OpenAI API Key<input name="openai_api_key" type="password" placeholder="留空则不修改"></label>
+      <label>OpenAI 模型<input name="openai_model" value="{{ settings.openai_model }}"></label>
+      <label>SMTP Host<input name="smtp_host" value="{{ settings.smtp_host }}"></label>
+      <label>SMTP Port<input name="smtp_port" value="{{ settings.smtp_port }}"></label>
+      <label>SMTP Username<input name="smtp_username" value="{{ settings.smtp_username }}"></label>
+      <label>SMTP Password<input name="smtp_password" type="password" placeholder="留空则不修改"></label>
+      <label>发件邮箱<input name="mail_from" value="{{ settings.mail_from }}"></label>
+      <label>发件名称<input name="mail_from_name" value="{{ settings.mail_from_name }}"></label>
+      <div class="inline-form"><label>日报时间<input name="report_hour" value="{{ settings.report_hour }}"></label><label>分钟<input name="report_minute" value="{{ settings.report_minute }}"></label></div>
+      <div class="inline-form"><label>热点时间<input name="hotspot_hour" value="{{ settings.hotspot_hour }}"></label><label>分钟<input name="hotspot_minute" value="{{ settings.hotspot_minute }}"></label></div>
+      <div class="inline-form"><label>发送频率<select name="report_frequency"><option value="daily" {% if report_schedule.frequency == 'daily' %}selected{% endif %}>每天</option><option value="weekly" {% if report_schedule.frequency == 'weekly' %}selected{% endif %}>每周</option><option value="monthly" {% if report_schedule.frequency == 'monthly' %}selected{% endif %}>每月</option></select></label><label>每周几/每月几号<input name="report_weekday" value="{{ report_schedule.weekday }}" placeholder="mon"><input name="report_monthday" value="{{ report_schedule.monthday }}" placeholder="1"></label></div>
+      <label>业务关键词<input name="business_keywords" value="{{ business_keywords }}" placeholder="无人机足球, 青少年科技体育"></label>
+      <label>热点来源<input name="hotspot_sources" value="{{ hotspot_sources }}" placeholder="抖音, 小红书, 微信视频号"></label>
+      <label>时区<input name="app_timezone" value="{{ settings.app_timezone }}"></label>
+      <div class="inline-form"><label>主题<select name="theme"><option value="light" {% if appearance.theme == 'light' %}selected{% endif %}>浅色</option><option value="dark" {% if appearance.theme == 'dark' %}selected{% endif %}>深色</option></select></label><label>字号<select name="font_scale"><option value="90" {% if appearance.font_scale == '90' %}selected{% endif %}>90%</option><option value="100" {% if appearance.font_scale == '100' %}selected{% endif %}>100%</option><option value="110" {% if appearance.font_scale == '110' %}selected{% endif %}>110%</option></select></label></div>
+      <button class="button primary">保存系统设置</button>
+    </form>
+  </section>
+  {% endif %}
+  {% if permissions.manage_recipients %}
+  <section class="panel recipient-panel">
+    <div class="panel-head"><div><h2>日报收件人</h2><p>支持标签、编辑和删除。</p></div></div>
+    <form method="post" action="/settings/recipients" class="inline-form recipient-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input name="name" placeholder="姓名">
+      <input type="email" name="email" placeholder="name@example.com" required>
+      <input name="tags" placeholder="标签，逗号分隔">
+      <button class="button primary">添加</button>
+    </form>
+    {% if permissions.delete_data %}
+    <form method="post" action="/settings/recipients/bulk-delete" class="inline-form recipient-form" data-confirm="确认批量删除这些收件人吗？">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input name="recipient_ids" placeholder="输入 ID，逗号分隔，例如 1,2,3">
+      <button class="button secondary">批量删除</button>
+    </form>
+    {% endif %}
+    <div class="simple-list">
+      {% for item in recipients %}
+      {% set recipient = item.recipient %}
+      <div class="simple-row vertical-row">
+        <div class="row-main"><span class="avatar">{{ (recipient.name or recipient.email)[:1]|upper }}</span><div><strong>{{ recipient.name or '未命名' }}</strong><small>{{ recipient.email }}</small><small>{{ item.tags_text or '无标签' }}</small></div><span class="status-dot {{ 'on' if recipient.is_active else 'off' }}">{{ '接收中' if recipient.is_active else '已停用' }}</span></div>
+        <form method="post" action="/settings/recipients/{{ recipient.id }}/edit" class="inline-form compact-form">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input name="name" value="{{ recipient.name }}" placeholder="姓名">
+          <input name="email" value="{{ recipient.email }}" placeholder="邮箱">
+          <input name="tags" value="{{ item.tags_text }}" placeholder="标签">
+          <button class="text-button">保存</button>
+        </form>
+        <div class="row-actions">
+          <form method="post" action="/settings/recipients/{{ recipient.id }}/toggle"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">{{ '停用' if recipient.is_active else '启用' }}</button></form>
+          {% if permissions.delete_data %}<form method="post" action="/settings/recipients/{{ recipient.id }}/delete" data-confirm="确认删除这个收件人吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">删除</button></form>{% endif %}
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-inline">还没有收件邮箱</div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+  <section class="panel recipient-panel">
+    <div class="panel-head"><div><h2>热点历史</h2><p>保留最近生成的热点日报，便于复盘。</p></div></div>
+    <div class="simple-list">
+      {% for report in hotspot_history %}
+      <div class="simple-row"><div><strong>{{ report.report_date }}</strong><small>{{ report.updated_at.strftime('%Y-%m-%d %H:%M') }} · {{ report.status }}</small></div></div>
+      {% else %}
+      <div class="empty-inline">还没有热点历史</div>
+      {% endfor %}
+    </div>
+  </section>
+  {% if permissions.delete_data %}
+  <section class="panel recipient-panel">
+    <div class="panel-head"><div><h2>测试数据清理</h2><p>仅超级管理员可用，清理名称中包含“测试”的数据。</p></div></div>
+    <form method="post" action="/settings/test-data/cleanup" data-confirm="确认清理测试数据吗？" class="inline-form recipient-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button secondary">批量清理测试数据</button>
+    </form>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

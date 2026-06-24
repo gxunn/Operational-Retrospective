@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}周报月报 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <p class="section-note">报表生成器</p>
+    <h1>生成报告</h1>
+    <p>支持周报、月报、项目复盘和活动复盘，输出 Markdown、文本版和 PPT 大纲版。</p>
+  </div>
+</section>
+
+<div class="two-column">
+  <section class="panel form-panel">
+    <h2>生成报表</h2>
+    <form method="post" action="/report-builder/generate" class="stack-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>报表类型
+        <select name="report_kind">
+          <option value="weekly">周报</option>
+          <option value="monthly">月报</option>
+          <option value="project">项目复盘</option>
+          <option value="event">活动复盘</option>
+        </select>
+      </label>
+      <label>时间范围
+        <select name="range_type">
+          <option value="yesterday">昨日</option>
+          <option value="7d">最近7天</option>
+          <option value="30d">最近30天</option>
+          <option value="custom">自定义日期</option>
+        </select>
+      </label>
+      <div class="inline-form">
+        <label>开始日期<input type="date" name="start_date"></label>
+        <label>结束日期<input type="date" name="end_date"></label>
+      </div>
+      <label>平台
+        <select name="platform">
+          <option value="">全部平台</option>
+          {% for item in ['抖音','小红书','视频号','公众号','其他自定义平台'] %}
+          <option value="{{ item }}">{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>账号
+        <select name="account_id">
+          <option value="0">全部账号</option>
+          {% for account in accounts %}
+          <option value="{{ account.id }}">{{ account.platform }} · {{ account.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="button primary">自动生成</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><h2>最近生成</h2><p>Markdown / 文本 / PPT 大纲</p></div></div>
+    <div class="simple-list">
+      {% for item in drafts %}
+      <div class="simple-row">
+        <div>
+          <strong>{{ item.title }}</strong>
+          <small>{{ {'weekly':'周报','monthly':'月报','project':'项目复盘','event':'活动复盘'}.get(item.report_kind, item.report_kind) }} · {{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-inline">还没有生成任何报表</div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+
+{% if draft %}
+<section class="panel report-paper u-mt-24">
+  <h1>{{ draft.title }}</h1>
+  <h2>Markdown 版</h2>
+  <pre class="report-pre">{{ draft.markdown_content }}</pre>
+  <h2>可复制文本版</h2>
+  <pre class="report-pre">{{ draft.text_content }}</pre>
+  <h2>PPT 大纲版</h2>
+  <pre class="report-pre">{{ draft.ppt_outline }}</pre>
+</section>
+{% endif %}
+{% endblock %}

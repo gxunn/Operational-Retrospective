@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}选题中心 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <p class="section-note">AI 选题与热点</p>
+    <h1>选题中心</h1>
+    <p>支持业务关键词输入、AI 生成 20 个选题，以及后续接入热点抓取接口。</p>
+  </div>
+</section>
+
+<div class="two-column">
+  <section class="panel form-panel">
+    <h2>AI 生成选题</h2>
+    <form method="post" action="/topic-center/generate" class="stack-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>业务关键词<input name="keyword" value="{{ keyword }}" placeholder="无人机足球 / 张家界研学 / 无人机考证 / 成人学历提升"></label>
+      <label>所属业务
+        <select name="business">
+          {% for item in ['无人机足球', '无人机考证', '成人学历', '其他'] %}
+          <option value="{{ item }}" {% if business == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>主平台
+        <select name="platform">
+          {% for item in ['抖音','小红书','视频号','公众号','其他自定义平台'] %}
+          <option value="{{ item }}">{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="button primary">AI生成选题</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><h2>选题库</h2><p>最新 40 条</p></div></div>
+    <div class="simple-list">
+      {% for item in topics %}
+      <div class="simple-row vertical-row">
+        <div class="row-main">
+          <div>
+            <strong>{{ item.title }}</strong>
+            <small>{{ item.business }} · {{ item.content_type }} · {{ item.platform }}</small>
+            <small>{{ item.status }} · 优先级 {{ item.priority }} · {{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
+          </div>
+          <span class="status-dot {{ 'on' if item.priority == 'S' else ('wait' if item.priority == 'A' else 'off') }}">{{ item.priority }}</span>
+        </div>
+        <div class="row-actions">
+          <span class="text-chip">角度：{{ item.angle or '—' }}</span>
+          <span class="text-chip">脚本：{{ item.script_direction or '—' }}</span>
+          {% if item.reference_link %}<a class="table-link" href="{{ item.reference_link }}" target="_blank" rel="noopener noreferrer">参考链接</a>{% endif %}
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-inline">还没有选题，先生成一批。</div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

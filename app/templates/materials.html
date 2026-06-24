@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}素材库 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <p class="section-note">素材资产</p>
+    <h1>素材库</h1>
+    <p>支持上传、搜索、标签筛选、收藏、下载和删除，后续可替换为真实对象存储。</p>
+  </div>
+</section>
+
+<div class="two-column">
+  <section class="panel form-panel">
+    <h2>上传素材</h2>
+    <form method="post" action="/materials" enctype="multipart/form-data" class="stack-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>素材名称<input name="name" required></label>
+      <label>类型
+        <select name="asset_type">
+          <option>图片</option>
+          <option>视频</option>
+          <option>Logo</option>
+          <option>海报</option>
+          <option>文案</option>
+          <option>活动方案</option>
+          <option>合同/资料</option>
+        </select>
+      </label>
+      <label>所属项目<input name="project_name" placeholder="无人机足球 / 研学 / 成人学历"></label>
+      <label>使用场景<input name="use_scene" placeholder="招生海报 / 活动预热 / 直播封面"></label>
+      <label>标签<input name="tags" placeholder="张家界, 无人机足球, 研学"></label>
+      <label>上传文件<input type="file" name="file"></label>
+      <label>备注<textarea name="note" rows="4"></textarea></label>
+      <button class="button primary">上传素材</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><h2>素材列表</h2><p>支持搜索和标签筛选</p></div></div>
+    <form class="panel-head" method="get" action="/materials">
+      <input name="q" value="{{ q }}" placeholder="搜索名称、项目或备注">
+      <input name="tag" value="{{ tag }}" placeholder="标签过滤">
+      <button class="button secondary">筛选</button>
+    </form>
+    <div class="simple-list">
+      {% for row in materials %}
+      {% set item = row.item %}
+      <div class="simple-row vertical-row">
+        <div class="row-main">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <small>{{ item.asset_type }} · {{ item.project_name or '未归类' }} · {{ item.use_scene or '未填写场景' }}</small>
+            <small>{{ item.uploader_name }} · {{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
+          </div>
+          <span class="status-dot {{ 'on' if item.is_favorite else 'wait' }}">{{ '收藏' if item.is_favorite else '普通' }}</span>
+        </div>
+        <div class="row-actions">
+          <span class="text-chip">{% for item_tag in row.tags %}<span>{{ item_tag }}</span>{% endfor %}</span>
+          <form method="post" action="/materials/{{ item.id }}/toggle-favorite"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">{{ '取消收藏' if item.is_favorite else '收藏' }}</button></form>
+          {% if item.file_path %}<a class="table-link" href="/materials/{{ item.id }}/download">下载</a>{% endif %}
+          {% if permissions.delete_data %}<form method="post" action="/materials/{{ item.id }}/delete" data-confirm="确认删除这个素材吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">删除</button></form>{% endif %}
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-inline">还没有素材，先上传第一份。</div>
+      {% endfor %}
+    </div>
+    {% if permissions.delete_data %}
+    <form method="post" action="/materials/bulk-delete" class="sticky-actions" data-confirm="确认批量删除这些素材吗？">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input name="material_ids" placeholder="批量删除请输入素材 ID，逗号分隔">
+      <button class="button secondary">批量删除</button>
+    </form>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -1,4 +1,5 @@
 import json
+import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -8,8 +9,9 @@ from openai import OpenAI
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..config import BASE_DIR, settings
-from ..models import ContentDailyMetric, DailyAccountMetric, PlatformAccount, Report
+from ..config import BASE_DIR
+from ..models import ContentDailyMetric, DailyAccountMetric, PlatformAccount, Report, SummaryReport
+from .runtime import runtime_settings
 
 
 METRICS = ["followers_new", "views", "likes", "comments", "favorites", "shares", "leads"]
@@ -91,6 +93,42 @@ def report_stats(db: Session, target: date) -> dict:
     }
 
 
+def summary_stats(db: Session, start_date: date, end_date: date) -> dict:
+    rows = db.scalars(
+        select(DailyAccountMetric).where(
+            DailyAccountMetric.metric_date >= start_date,
+            DailyAccountMetric.metric_date <= end_date,
+        )
+    ).all()
+    current = {field: sum(getattr(row, field) for row in rows) for field in METRICS}
+    days = max((end_date - start_date).days + 1, 1)
+    averages = {field: current[field] / days for field in METRICS}
+    contents = db.scalars(
+        select(ContentDailyMetric)
+        .where(ContentDailyMetric.metric_date >= start_date, ContentDailyMetric.metric_date <= end_date)
+        .order_by(ContentDailyMetric.views.desc())
+        .limit(10)
+    ).all()
+    rankings = [
+        {
+            "account": f"{item.account.platform} · {item.account.name}",
+            "highest_views": {"title": item.title, "views": item.views},
+            "best": {"title": item.title, "rate": ((item.likes + item.comments + item.favorites + item.shares) / item.views) if item.views else 0},
+            "worst": {"title": item.title, "rate": ((item.likes + item.comments + item.favorites + item.shares) / item.views) if item.views else 0},
+        }
+        for item in contents
+    ]
+    return {
+        "date": f"{start_date} 至 {end_date}",
+        "current": current,
+        "previous": {field: 0 for field in METRICS},
+        "averages": averages,
+        "average_sample_days": days,
+        "missing_accounts": [],
+        "rankings": rankings,
+    }
+
+
 def percent_change(current: float, baseline: float) -> str:
     if baseline == 0:
         return "—" if current == 0 else "新增"
@@ -123,7 +161,7 @@ def base_markdown(stats: dict) -> str:
     return "\n".join(lines)
 
 
-def ai_analysis(stats: dict) -> tuple[str, str]:
+def ai_analysis(stats: dict, settings) -> tuple[str, str]:
     if not settings.openai_api_key:
         return "", "未配置 OPENAI_API_KEY，已生成纯数据版报告"
     prompt = f"""你是资深中文自媒体运营顾问。根据下面的汇总数据写一份简洁、具体、可执行的中文日报。
@@ -153,10 +191,31 @@ def ai_analysis(stats: dict) -> tuple[str, str]:
         return "", f"AI 暂时不可用（{type(exc).__name__}）；已生成纯数据版报告"
 
 
-def render_pdf(report: Report) -> str:
+def render_pdf(report: Report | SummaryReport) -> str:
     output_dir = BASE_DIR / "reports"
     output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / f"daily-{report.report_date.isoformat()}.pdf"
+    stamp = getattr(report, "report_date", None) or getattr(report, "end_date", None)
+    target = output_dir / f"report-{stamp.isoformat()}.pdf"
+
+    def fallback_pdf() -> str:
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+            # 回退到纯文本版，确保缺少系统图形库时仍可导出 PDF。
+            text = re.sub(r"<[^>]+>", "", report.html_content or "")
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            styles = getSampleStyleSheet()
+            story = [Paragraph((getattr(report, "title", "") or "复盘报告").replace("\n", " "), styles["Title"]), Spacer(1, 16)]
+            for line in lines:
+                story.append(Paragraph(line.replace("\n", " "), styles["BodyText"]))
+                story.append(Spacer(1, 8))
+            SimpleDocTemplate(str(target), pagesize=A4, leftMargin=36, rightMargin=36, topMargin=42, bottomMargin=42).build(story)
+            return str(target)
+        except Exception:
+            return ""
+
     try:
         from weasyprint import HTML
 
@@ -169,16 +228,17 @@ def render_pdf(report: Report) -> str:
         HTML(string=page, base_url=str(BASE_DIR)).write_pdf(target)
         return str(target)
     except Exception:
-        return ""
+        return fallback_pdf()
 
 
 def generate_report(db: Session, target: date | None = None, use_latest: bool = True) -> Report:
+    settings = runtime_settings(db)
     requested = target or (date.today() - timedelta(days=1))
     if use_latest and not any(_totals(db, requested).values()):
         requested = latest_data_date(db) or requested
     stats = report_stats(db, requested)
     markdown_content = base_markdown(stats)
-    analysis, error = ai_analysis(stats)
+    analysis, error = ai_analysis(stats, settings)
     if analysis:
         markdown_content += "\n\n" + analysis
     elif error:
@@ -188,6 +248,53 @@ def generate_report(db: Session, target: date | None = None, use_latest: bool = 
     if not report:
         report = Report(report_date=requested)
         db.add(report)
+    report.status = "generated_with_warning" if error else "generated"
+    report.title = f"{requested} {settings.app_name} 日报"
+    report.report_type = "daily"
+    report.markdown_content = markdown_content
+    report.html_content = html_content
+    report.stats_json = json.dumps(stats, ensure_ascii=False)
+    report.ai_error = error
+    report.updated_at = datetime.now().replace(microsecond=0)
+    db.flush()
+    report.pdf_path = render_pdf(report)
+    return report
+
+
+def generate_summary_report(db: Session, period_type: str, target: date | None = None) -> SummaryReport:
+    settings = runtime_settings(db)
+    anchor = target or latest_data_date(db) or (date.today() - timedelta(days=1))
+    if period_type == "monthly":
+        start_date = anchor.replace(day=1)
+        if anchor.month == 12:
+            next_month = anchor.replace(year=anchor.year + 1, month=1, day=1)
+        else:
+            next_month = anchor.replace(month=anchor.month + 1, day=1)
+        end_date = min(anchor, next_month - timedelta(days=1))
+        title = f"{anchor.year}年{anchor.month}月复盘"
+    else:
+        start_date = anchor - timedelta(days=anchor.weekday())
+        end_date = min(anchor, start_date + timedelta(days=6))
+        title = f"{start_date} 至 {end_date} 周报"
+    stats = summary_stats(db, start_date, end_date)
+    markdown_content = f"# {title}\n\n" + base_markdown(stats).removeprefix(f"# {stats['date']} 自媒体每日复盘\n\n")
+    analysis, error = ai_analysis(stats, settings)
+    if analysis:
+        markdown_content += "\n\n" + analysis
+    elif error:
+        markdown_content += "\n\n## AI 分析状态\n\n" + error
+    html_content = md.markdown(markdown_content, extensions=["tables", "fenced_code"])
+    report = db.scalar(
+        select(SummaryReport).where(
+            SummaryReport.period_type == period_type,
+            SummaryReport.start_date == start_date,
+            SummaryReport.end_date == end_date,
+        )
+    )
+    if not report:
+        report = SummaryReport(period_type=period_type, start_date=start_date, end_date=end_date)
+        db.add(report)
+    report.title = title
     report.status = "generated_with_warning" if error else "generated"
     report.markdown_content = markdown_content
     report.html_content = html_content

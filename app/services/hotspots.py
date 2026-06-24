@@ -7,8 +7,8 @@ from openai import OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import settings
 from ..models import HotspotReport
+from .runtime import get_json_setting, runtime_settings
 
 
 EMPTY_PAYLOAD = {"summary": "", "realtime": [], "weekly": [], "topics": [], "sources": []}
@@ -123,6 +123,13 @@ def friendly_openai_error(exc: Exception) -> str:
 
 
 def generate_hotspots(db: Session, target: date | None = None) -> HotspotReport:
+    settings = runtime_settings(db)
+    business_keywords = get_json_setting(
+        db,
+        "business_keywords",
+        ["无人机足球", "青少年科技体育", "科技特长生", "赛事培训", "安全科普"],
+    )
+    hotspot_sources = get_json_setting(db, "hotspot_sources", ["抖音", "小红书", "微信视频号"])
     target = target or datetime.now(ZoneInfo(settings.app_timezone)).date()
     report = db.scalar(select(HotspotReport).where(HotspotReport.report_date == target))
     if not report:
@@ -136,10 +143,10 @@ def generate_hotspots(db: Session, target: date | None = None) -> HotspotReport:
         return report
 
     prompt = f"""你是中国短视频热点研究员和青少年科技体育内容策划。
-当前日期是 {target.isoformat()}，时区为中国标准时间。请使用网页搜索，研究抖音、小红书、微信视频号、B站等中国短视频/内容平台：
+当前日期是 {target.isoformat()}，时区为中国标准时间。请使用网页搜索，研究这些平台或来源：{", ".join(hotspot_sources)}：
 1. 最近 24 小时仍有时效性的“大众短视频平台热点”，最多 6 条；
 2. 最近 7 天持续发酵、适合内容创作的“大众周热点”，最多 8 条；
-3. 再从上述大众热点中初筛最多 8 个能与“无人机足球、青少年科技体育、科技特长生、赛事培训、安全科普”自然融合的选题。
+3. 再从上述大众热点中初筛最多 8 个能与“{", ".join(business_keywords)}”自然融合的选题。
 
 要求：
 - realtime 和 weekly 是大众热点概览，不是无人机行业新闻列表；应覆盖社会文化、体育、教育、科技、生活方式等多个类别。除非无人机事件已成为大众平台热点，否则不要放进前两部分。
