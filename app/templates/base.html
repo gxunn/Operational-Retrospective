@@ -6,38 +6,59 @@
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
   <link rel="icon" href="{{ url_for('static', path='/favicon.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/design-system.css') }}">
   <script defer src="{{ url_for('static', path='/app.js') }}"></script>
 </head>
-<body>
+<body data-theme="{{ appearance.theme if appearance is defined else 'light' }}" data-font-scale="{{ appearance.font_scale if appearance is defined else '100' }}" data-static-site="{{ 'true' if static_site is defined and static_site else 'false' }}">
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
-      <a class="brand" href="/"><span class="brand-rule"></span><span>日拱一卒<small>自媒体复盘</small></span></a>
+      <a class="brand" href="/"><span class="brand-rule"></span><span>运营效率中台 <small>V2</small></span></a>
       <nav class="nav-list" aria-label="主导航">
         {% set items = [
-          ('/', '总览', 'chart'), ('/imports/upload', '上传数据', 'upload'), ('/accounts', '账号管理', 'user'),
-          ('/metrics', '每日数据', 'calendar'), ('/hotspots', '每日热点', 'sparkles'), ('/reports', '复盘报告', 'file'),
-          ('/users', '团队成员', 'users'), ('/settings', '系统设置', 'settings')
+          ('/', '总览', 'chart'),
+          ('/metrics', '数据', 'calendar'),
+          ('/ai-review', 'AI分析', 'sparkles'),
+          ('/report-builder', '生成报告', 'file'),
+          ('/topic-center', '选题中心', 'sparkles'),
+          ('/breakdown', '爆款拆解', 'file'),
+          ('/materials', '素材库', 'upload'),
+          ('/accounts', '账号管理', 'user'),
+          ('/users', '团队权限', 'users'),
+          ('/settings', '系统设置', 'settings')
         ] %}
         {% for href, label, icon in items %}
-          {% if label != '团队成员' or user.role == 'admin' %}
           <a href="{{ href }}" class="nav-item {% if request.url.path == href or (href != '/' and request.url.path.startswith(href)) %}active{% endif %}">
             <svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/icons.svg#{{ icon }}"></use></svg><span>{{ label }}</span>
           </a>
-          {% endif %}
         {% endfor %}
       </nav>
       <div class="sidebar-footer">
-        <div class="user-block"><span class="avatar">{{ (user.display_name or user.username)[:1] }}</span><span><strong>{{ user.display_name or user.username }}</strong><small>{{ '管理员' if user.role == 'admin' else '团队成员' }}</small></span></div>
+        <div class="user-block"><span class="avatar">{{ (user.display_name or user.username)[:1] }}</span><span><strong>{{ user.display_name or user.username }}</strong><small>{{ user_role_label }}</small></span></div>
         <div class="sidebar-tools"><button class="icon-button collapse-button" type="button" data-collapse title="收起菜单" aria-label="收起菜单"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button><form action="/auth/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" title="退出登录" aria-label="退出登录"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#logout"></use></svg></button></form></div>
       </div>
     </aside>
     <div class="main-wrap">
-      <header class="mobile-header"><button class="icon-button" type="button" data-menu aria-label="打开菜单"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#menu"></use></svg></button><span>日拱一卒 · 自媒体复盘</span></header>
+      <header class="mobile-header"><button class="icon-button" type="button" data-menu aria-label="打开菜单"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#menu"></use></svg></button><span>运营效率中台 V2</span></header>
       <main class="main-content">
         {% if message %}<div class="toast" role="status">{{ message }}</div>{% endif %}
         {% block content %}{% endblock %}
       </main>
     </div>
   </div>
+  <button class="assistant-fab" type="button" data-assistant-toggle>AI 助手</button>
+  <section class="assistant-panel" data-assistant-panel hidden>
+    <div class="assistant-head">
+      <strong>AI 助手</strong>
+      <button class="icon-button" type="button" data-assistant-close aria-label="关闭">×</button>
+    </div>
+    <div class="assistant-body" data-assistant-log>
+      <p>可以直接问：播放量下降原因是什么？下周推荐哪些选题？</p>
+    </div>
+    <form class="assistant-form" data-assistant-form>
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <textarea name="question" rows="3" placeholder="输入你的问题"></textarea>
+      <button class="button primary" type="submit">发送</button>
+    </form>
+  </section>
 </body>
 </html>
