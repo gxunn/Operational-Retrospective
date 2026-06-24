@@ -9,21 +9,49 @@
     {% endif %}
   </div>
 </section>
+<section class="panel u-mb-16">
+  <form class="panel-head" method="get" action="/imports">
+    <select name="status">
+      <option value="">全部状态</option>
+      {% for item in ['preview','imported','failed','rolled_back'] %}
+      <option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ {'preview':'待确认','imported':'已导入','failed':'失败','rolled_back':'已回滚'}.get(item, item) }}</option>
+      {% endfor %}
+    </select>
+    <select name="platform">
+      <option value="">全部平台</option>
+      {% for item in platforms %}
+      <option value="{{ item }}" {% if selected_platform == item %}selected{% endif %}>{{ item }}</option>
+      {% endfor %}
+    </select>
+    <select name="account_id">
+      <option value="">全部账号</option>
+      {% for account in accounts %}
+      <option value="{{ account.id }}" {% if selected_account_id == account.id %}selected{% endif %}>{{ account.platform }} · {{ account.name }}</option>
+      {% endfor %}
+    </select>
+    <input type="date" name="start_date" value="{{ start_date }}">
+    <input type="date" name="end_date" value="{{ end_date }}">
+    <button class="button secondary">筛选</button>
+  </form>
+</section>
 <section class="panel">
   <div class="table-wrap">
     <table>
-      <thead><tr><th>上传时间</th><th>账号</th><th>文件</th><th>日期范围</th><th>行数</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>上传时间</th><th>平台</th><th>账号</th><th>文件</th><th>上传人</th><th>日期范围</th><th>行数</th><th>状态</th><th>操作</th></tr></thead>
       <tbody>
         {% for batch in batches %}
         <tr>
           <td>{{ batch.created_at.strftime('%m-%d %H:%M') }}</td>
-          <td>{{ batch.account.platform }} · {{ batch.account.name }}</td>
+          <td>{{ batch.account.platform }}</td>
+          <td>{{ batch.account.name }}</td>
           <td class="title-cell">{{ batch.original_filename }}{% if batch.error_message %}<small class="error-detail">{{ batch.error_message }}</small>{% endif %}</td>
+          <td>{{ batch.uploader.display_name or batch.uploader.username }}</td>
           <td>{{ batch.start_date or '—' }}{% if batch.end_date and batch.end_date != batch.start_date %} 至 {{ batch.end_date }}{% endif %}</td>
           <td>{{ batch.row_count }}</td>
           <td><span class="status-dot {{ 'on' if batch.status == 'imported' else ('wait' if batch.status in ['preview', 'rolled_back'] else 'off') }}">{{ {'imported':'已导入','preview':'待确认','failed':'失败','rolled_back':'已回滚'}.get(batch.status,batch.status) }}</span></td>
           <td>
             {% if batch.status == 'preview' %}<a class="table-link" href="/imports/{{ batch.id }}/preview">继续</a>{% endif %}
+            {% if batch.status == 'failed' and permissions.import_data %}<form class="u-inline" method="post" action="/imports/{{ batch.id }}/retry"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">重新上传</button></form>{% endif %}
             {% if permissions.delete_data %}
               {% if batch.status == 'imported' %}<form class="u-inline" method="post" action="/imports/{{ batch.id }}/rollback"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">回滚</button></form>{% endif %}
               <form class="u-inline" method="post" action="/imports/{{ batch.id }}/delete" data-confirm="确认删除这条导入记录吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">删除</button></form>

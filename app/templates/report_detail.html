@@ -1,3 +1,34 @@
 {% extends "base.html" %}
 {% block title %}{{ (report.end_date if report.start_date is defined else report.report_date) }} 报告 · {{ app_name }}{% endblock %}
-{% block content %}<section class="page-heading"><div><p class="section-note">{{ report.end_date if report.start_date is defined else report.report_date }}</p><h1>{{ report.title or '复盘报告' }}</h1><p>{% if report.ai_error %}已生成纯数据版：{{ report.ai_error }}{% else %}数据与 AI 分析已生成{% endif %}</p></div><div class="heading-actions"><a class="button secondary" href="{{ '/summary-reports/' if report.start_date is defined else '/reports/' }}{{ report.id }}/markdown">导出 Markdown</a><a class="button secondary" href="{{ '/summary-reports/' if report.start_date is defined else '/reports/' }}{{ report.id }}/pdf">导出 PDF</a>{% if permissions.send_email and report.start_date is not defined %}<form method="post" action="/reports/{{ report.id }}/email"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button primary">发送邮件</button></form>{% endif %}</div></section><article class="report-paper">{{ report.html_content|safe }}</article>{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <p class="section-note">{{ report.end_date if report.start_date is defined else report.report_date }}</p>
+    <h1>{{ report.title or '复盘报告' }}</h1>
+    <p>{% if report.ai_error %}已生成纯数据版：{{ report.ai_error }}{% else %}数据与 AI 分析已生成{% endif %}</p>
+  </div>
+  <div class="heading-actions">
+    <a class="button secondary" href="{{ '/summary-reports/' if report.start_date is defined else '/reports/' }}{{ report.id }}/markdown">导出 Markdown</a>
+    <a class="button secondary" href="{{ '/summary-reports/' if report.start_date is defined else '/reports/' }}{{ report.id }}/pdf">导出 PDF</a>
+    {% if permissions.send_email and report.start_date is not defined %}
+    <form method="post" action="/reports/{{ report.id }}/email">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button primary">发送邮件</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
+{% if permissions.manage_reports %}
+<section class="panel u-mb-16">
+  <form method="post" action="{{ '/summary-reports/' if report.start_date is defined else '/reports/' }}{{ report.id }}/edit" class="stack-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>报告标题<input name="title" value="{{ report.title }}" required></label>
+    <label>报告内容<textarea name="markdown_content" rows="18" required>{{ report.markdown_content }}</textarea></label>
+    <button class="button primary">保存报告</button>
+  </form>
+</section>
+{% endif %}
+
+<article class="report-paper">{{ report.html_content|safe }}</article>
+{% endblock %}

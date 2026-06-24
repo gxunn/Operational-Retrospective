@@ -58,7 +58,7 @@
           <option>小红书</option>
           <option>视频号</option>
           <option>公众号</option>
-          <option>其他自定义平台</option>
+          <option>其他</option>
         </select>
       </label>
       <div class="field-grid">
@@ -120,7 +120,7 @@
         <input name="q" value="{{ q }}" placeholder="搜索标题、平台、封面描述">
         <select name="platform">
           <option value="">全部平台</option>
-          {% for item in ['抖音','小红书','视频号','公众号','其他自定义平台'] %}
+          {% for item in ['抖音','小红书','视频号','公众号','其他'] %}
           <option value="{{ item }}" {% if selected_platform == item %}selected{% endif %}>{{ item }}</option>
           {% endfor %}
         </select>

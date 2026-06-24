@@ -5,12 +5,49 @@
   <div>
     <p class="section-note">AI 选题与热点</p>
     <h1>选题中心</h1>
-    <p>支持业务关键词输入、AI 生成 20 个选题，以及后续接入热点抓取接口。</p>
+    <p>支持手动新增、编辑、收藏、删除，以及按状态快速管理选题。</p>
   </div>
 </section>
 
 <div class="two-column">
   <section class="panel form-panel">
+    <h2>手动添加选题</h2>
+    <form method="post" action="/topic-center" class="stack-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>标题<input name="title" required placeholder="例如：为什么这个平台容易涨粉"></label>
+      <label>平台
+        <select name="platform">
+          {% for item in ['抖音','小红书','视频号','公众号','其他'] %}
+          <option value="{{ item }}">{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>内容方向<input name="content_type" value="科普" placeholder="科普 / 招生 / 活动 / 转化"></label>
+      <label>负责人<input name="owner_name" placeholder="填写负责成员"></label>
+      <label>业务类型<input name="business" value="{{ business }}" placeholder="无人机足球 / 成人学历 / 其他"></label>
+      <label>参考链接<input name="reference_link" placeholder="可选链接"></label>
+      <label>优先级
+        <select name="priority">
+          {% for item in ['S','A','B','C'] %}
+          <option value="{{ item }}">{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>状态
+        <select name="status">
+          {% for item in topic_status_options %}
+          <option value="{{ item }}">{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>备注<textarea name="note" rows="3"></textarea></label>
+      <label>选题角度<textarea name="angle" rows="3"></textarea></label>
+      <label>脚本方向<textarea name="script_direction" rows="3"></textarea></label>
+      <button class="button primary">保存选题</button>
+    </form>
+
+    <hr>
+
     <h2>AI 生成选题</h2>
     <form method="post" action="/topic-center/generate" class="stack-form">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -24,12 +61,12 @@
       </label>
       <label>主平台
         <select name="platform">
-          {% for item in ['抖音','小红书','视频号','公众号','其他自定义平台'] %}
+          {% for item in ['抖音','小红书','视频号','公众号','其他'] %}
           <option value="{{ item }}">{{ item }}</option>
           {% endfor %}
         </select>
       </label>
-      <button class="button primary">AI生成选题</button>
+      <button class="button secondary">AI生成选题</button>
     </form>
   </section>
 
@@ -41,19 +78,58 @@
         <div class="row-main">
           <div>
             <strong>{{ item.title }}</strong>
-            <small>{{ item.business }} · {{ item.content_type }} · {{ item.platform }}</small>
+            <small>{{ item.business }} · {{ item.content_type }} · {{ item.platform }}{% if item.owner_name %} · 负责人：{{ item.owner_name }}{% endif %}</small>
             <small>{{ item.status }} · 优先级 {{ item.priority }} · {{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
           </div>
           <span class="status-dot {{ 'on' if item.priority == 'S' else ('wait' if item.priority == 'A' else 'off') }}">{{ item.priority }}</span>
         </div>
+        <form method="post" action="/topic-center/{{ item.id }}/edit" class="inline-form compact-form">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input name="title" value="{{ item.title }}" placeholder="标题" required>
+          <input name="platform" value="{{ item.platform }}" placeholder="平台">
+          <input name="business" value="{{ item.business }}" placeholder="业务类型">
+          <input name="content_type" value="{{ item.content_type }}" placeholder="内容方向">
+          <input name="owner_name" value="{{ item.owner_name }}" placeholder="负责人">
+          <input name="reference_link" value="{{ item.reference_link }}" placeholder="参考链接">
+          <select name="priority">
+            {% for p in ['S','A','B','C'] %}
+            <option value="{{ p }}" {% if item.priority == p %}selected{% endif %}>{{ p }}</option>
+            {% endfor %}
+          </select>
+          <select name="status">
+            {% for s in topic_status_options %}
+            <option value="{{ s }}" {% if item.status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+          <input name="angle" value="{{ item.angle }}" placeholder="选题角度">
+          <input name="script_direction" value="{{ item.script_direction }}" placeholder="脚本方向">
+          <input name="note" value="{{ item.note }}" placeholder="备注">
+          <button class="text-button">保存</button>
+        </form>
         <div class="row-actions">
-          <span class="text-chip">角度：{{ item.angle or '—' }}</span>
-          <span class="text-chip">脚本：{{ item.script_direction or '—' }}</span>
+          <form method="post" action="/topic-center/{{ item.id }}/favorite">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="text-button">{{ '取消收藏' if item.is_favorite else '收藏' }}</button>
+          </form>
+          <form method="post" action="/topic-center/{{ item.id }}/status">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <select name="status">
+              {% for s in topic_status_options %}
+              <option value="{{ s }}" {% if item.status == s %}selected{% endif %}>{{ s }}</option>
+              {% endfor %}
+            </select>
+            <button class="text-button">状态</button>
+          </form>
           {% if item.reference_link %}<a class="table-link" href="{{ item.reference_link }}" target="_blank" rel="noopener noreferrer">参考链接</a>{% endif %}
+          <form method="post" action="/topic-center/{{ item.id }}/delete" data-confirm="确认删除这个选题吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">删除</button></form>
+        </div>
+        <div class="row-actions">
+          <span class="text-chip">收藏：{{ '是' if item.is_favorite else '否' }}</span>
+          <span class="text-chip">备注：{{ item.note or '—' }}</span>
         </div>
       </div>
       {% else %}
-      <div class="empty-inline">还没有选题，先生成一批。</div>
+      <div class="empty-inline">还没有选题，先手动添加或生成一批。</div>
       {% endfor %}
     </div>
   </section>

@@ -12,6 +12,7 @@ load_dotenv(BASE_DIR / ".env")
 class Settings(BaseModel):
     app_name: str = "日拱一卒 · 自媒体复盘"
     database_url: str = "sqlite:///./data/app.db"
+    storage_dir: Path = BASE_DIR / "data"
     admin_username: str = "admin"
     admin_password: str = "admin123456"
     session_secret: str = "local-development-change-me"
@@ -41,6 +42,7 @@ class Settings(BaseModel):
 
         return cls(
             database_url=os.getenv("DATABASE_URL", "sqlite:///./data/app.db"),
+            storage_dir=Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "data"))),
             admin_username=os.getenv("ADMIN_USERNAME", "admin"),
             admin_password=os.getenv("ADMIN_PASSWORD", "admin123456"),
             session_secret=os.getenv("SESSION_SECRET", "local-development-change-me"),

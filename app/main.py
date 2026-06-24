@@ -10,6 +10,7 @@ from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import markdown as md
 from openai import OpenAI
 from sqlalchemy import func, inspect, or_, select, text
 from sqlalchemy.orm import Session
@@ -26,6 +27,7 @@ from .models import (
     EmailRecipient,
     HotspotReport,
     ImportBatch,
+    OperationLog,
     PlatformAccount,
     Report,
     MaterialAsset,
@@ -75,22 +77,31 @@ def initialize() -> None:
 
         add_column("users", "deleted_at", "deleted_at DATETIME")
         add_column("users", "deleted_by", "deleted_by INTEGER")
+        add_column("users", "updated_at", "updated_at DATETIME")
         add_column("platform_accounts", "last_synced_at", "last_synced_at DATETIME")
         add_column("platform_accounts", "deleted_at", "deleted_at DATETIME")
         add_column("platform_accounts", "deleted_by", "deleted_by INTEGER")
         add_column("platform_accounts", "manager_name", "manager_name VARCHAR(80) DEFAULT ''")
+        add_column("platform_accounts", "business_type", "business_type VARCHAR(80) DEFAULT ''")
         add_column("platform_accounts", "positioning", "positioning VARCHAR(255) DEFAULT ''")
         add_column("platform_accounts", "data_source", "data_source VARCHAR(30) DEFAULT 'manual'")
+        add_column("platform_accounts", "updated_at", "updated_at DATETIME")
         add_column("import_batches", "deleted_at", "deleted_at DATETIME")
         add_column("import_batches", "deleted_by", "deleted_by INTEGER")
+        add_column("import_batches", "updated_at", "updated_at DATETIME")
         add_column("reports", "title", "title VARCHAR(200) DEFAULT ''")
         add_column("reports", "report_type", "report_type VARCHAR(20) DEFAULT 'daily'")
         add_column("reports", "deleted_at", "deleted_at DATETIME")
         add_column("reports", "deleted_by", "deleted_by INTEGER")
+        add_column("topic_ideas", "is_favorite", "is_favorite BOOLEAN DEFAULT 0")
+        add_column("topic_ideas", "updated_at", "updated_at DATETIME")
+        add_column("topic_ideas", "status", "status VARCHAR(20) DEFAULT '待拍摄'")
+        add_column("topic_ideas", "owner_name", "owner_name VARCHAR(80) DEFAULT ''")
         add_column("email_recipients", "tags_json", "tags_json TEXT DEFAULT '[]'")
         add_column("content_daily_metrics", "private_messages", "private_messages FLOAT DEFAULT 0")
         add_column("content_daily_metrics", "conversion_note", "conversion_note TEXT DEFAULT ''")
-    for folder in (BASE_DIR / "uploads", BASE_DIR / "reports", BASE_DIR / "data"):
+    storage_dir = settings.storage_dir
+    for folder in (storage_dir, storage_dir / "uploads", storage_dir / "reports"):
         folder.mkdir(parents=True, exist_ok=True)
     with SessionLocal() as db:
         if not db.scalar(select(User).where(User.username == settings.admin_username)):
@@ -107,6 +118,7 @@ def initialize() -> None:
         db.query(User).filter(User.role == ROLE_MANAGER).update({User.role: ROLE_MEMBER})
         db.query(User).filter(User.display_name == "").update({User.display_name: User.username})
         db.query(PlatformAccount).filter(PlatformAccount.deleted_at.is_not(None)).update({PlatformAccount.is_active: False})
+        db.query(TopicIdea).filter(TopicIdea.status == "待写").update({TopicIdea.status: "待拍摄"})
         db.commit()
 
 
@@ -161,6 +173,26 @@ def current_actor(request: Request, db: Session) -> User | None:
     return current_user(request, db)
 
 
+def log_operation(
+    db: Session,
+    actor: User | None,
+    operation_type: str,
+    object_type: str,
+    object_name: str,
+    detail: str = "",
+) -> None:
+    db.add(
+        OperationLog(
+            operator_id=actor.id if actor else None,
+            operator_name=(actor.display_name or actor.username) if actor else "系统",
+            operation_type=operation_type,
+            object_type=object_type,
+            object_name=object_name,
+            detail=detail,
+        )
+    )
+
+
 def require_permission(request: Request, db: Session, permission: str, message: str = "没有权限") -> User | None:
     user = current_actor(request, db)
     if not user or not can(user, permission):
@@ -176,7 +208,7 @@ def parse_iso_date(value: str, fallback: date | None = None) -> date | None:
 
 
 def account_platform_choices(db: Session) -> list[str]:
-    fixed = ["抖音", "小红书", "视频号", "公众号", "其他自定义平台"]
+    fixed = ["抖音", "小红书", "视频号", "公众号", "其他"]
     existing = sorted(
         {
             item.platform
@@ -357,6 +389,7 @@ def accounts_page(request: Request, q: str = "", platform: str = ""):
                     PlatformAccount.name.contains(needle),
                     PlatformAccount.external_id.contains(needle),
                     PlatformAccount.manager_name.contains(needle),
+                    PlatformAccount.business_type.contains(needle),
                     PlatformAccount.positioning.contains(needle),
                 )
             )
@@ -382,6 +415,7 @@ def add_account(
     name: str = Form(),
     external_id: str = Form(""),
     manager_name: str = Form(""),
+    business_type: str = Form(""),
     positioning: str = Form(""),
     data_source: str = Form("manual"),
     is_active: str = Form("on"),
@@ -391,6 +425,8 @@ def add_account(
     with SessionLocal() as db:
         if not require_permission(request, db, "manage_accounts"):
             return redirect("/accounts", "只有超级管理员可以新增账号")
+        if not platform.strip() or not name.strip():
+            return redirect("/accounts", "平台和账号名称不能为空")
         if db.scalar(
             select(PlatformAccount).where(
                 PlatformAccount.platform == platform,
@@ -405,11 +441,14 @@ def add_account(
                 name=name.strip(),
                 external_id=external_id.strip(),
                 manager_name=manager_name.strip(),
+                business_type=business_type.strip(),
                 positioning=positioning.strip(),
                 data_source=data_source.strip() or "manual",
                 is_active=is_active == "on",
             )
         )
+        actor = current_actor(request, db)
+        log_operation(db, actor, "新增", "账号", f"{platform} · {name.strip()}", f"账号ID：{external_id.strip()}；负责人：{manager_name.strip()}")
         db.commit()
     return redirect("/accounts", "账号已添加")
 
@@ -422,6 +461,7 @@ def edit_account(
     name: str = Form(),
     external_id: str = Form(""),
     manager_name: str = Form(""),
+    business_type: str = Form(""),
     positioning: str = Form(""),
     data_source: str = Form("manual"),
     csrf: str = Form(),
@@ -433,6 +473,8 @@ def edit_account(
         account = db.get(PlatformAccount, account_id)
         if not account or account.deleted_at:
             return redirect("/accounts", "账号不存在")
+        if not platform.strip() or not name.strip():
+            return redirect("/accounts", "平台和账号名称不能为空")
         duplicate = db.scalar(
             select(PlatformAccount).where(
                 PlatformAccount.id != account_id,
@@ -447,9 +489,12 @@ def edit_account(
         account.name = name.strip()
         account.external_id = external_id.strip()
         account.manager_name = manager_name.strip()
+        account.business_type = business_type.strip()
         account.positioning = positioning.strip()
         account.data_source = data_source.strip() or "manual"
         account.last_synced_at = datetime.now().replace(microsecond=0)
+        actor = current_actor(request, db)
+        log_operation(db, actor, "编辑", "账号", f"{platform} · {name.strip()}", f"账号ID：{external_id.strip()}；负责人：{manager_name.strip()}")
         db.commit()
     return redirect("/accounts", "账号已更新")
 
@@ -463,6 +508,8 @@ def toggle_account(account_id: int, request: Request, csrf: str = Form()):
         account = db.get(PlatformAccount, account_id)
         if account and not account.deleted_at:
             account.is_active = not account.is_active
+            actor = current_actor(request, db)
+            log_operation(db, actor, "启用" if account.is_active else "停用", "账号", f"{account.platform} · {account.name}", f"账号ID：{account.external_id}")
             db.commit()
     return redirect("/accounts", "账号状态已更新")
 
@@ -478,8 +525,9 @@ def delete_account(account_id: int, request: Request, csrf: str = Form()):
             account.deleted_at = datetime.now().replace(microsecond=0)
             account.deleted_by = current_actor(request, db).id if current_actor(request, db) else None
             account.is_active = False
+            log_operation(db, current_actor(request, db), "删除", "账号", f"{account.platform} · {account.name}", f"账号ID：{account.external_id}")
             db.commit()
-    return redirect("/accounts", "账号已放入回收站")
+    return redirect("/accounts", "账号已删除")
 
 
 @app.post("/accounts/bulk")
@@ -490,15 +538,19 @@ def bulk_accounts(request: Request, action: str = Form(), account_ids: str = For
             return redirect("/accounts", "没有权限")
         ids = [int(item) for item in account_ids.split(",") if item.strip().isdigit()]
         accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.id.in_(ids), PlatformAccount.deleted_at.is_(None))).all()
+        actor = current_actor(request, db)
         for account in accounts:
             if action == "enable":
                 account.is_active = True
+                log_operation(db, actor, "启用", "账号", f"{account.platform} · {account.name}", "批量启用")
             elif action == "disable":
                 account.is_active = False
+                log_operation(db, actor, "停用", "账号", f"{account.platform} · {account.name}", "批量停用")
             elif action == "delete":
                 account.deleted_at = datetime.now().replace(microsecond=0)
                 account.deleted_by = current_actor(request, db).id if current_actor(request, db) else None
                 account.is_active = False
+                log_operation(db, actor, "删除", "账号", f"{account.platform} · {account.name}", "批量删除")
         db.commit()
     return redirect("/accounts", "批量操作已完成")
 
@@ -513,6 +565,7 @@ def sync_account_data(account_id: int, request: Request, csrf: str = Form()):
         if not account or account.deleted_at:
             return redirect("/accounts", "账号不存在")
         account.last_synced_at = datetime.now().replace(microsecond=0)
+        log_operation(db, current_actor(request, db), "上传", "账号同步", f"{account.platform} · {account.name}", "手动同步账号数据")
         db.commit()
         return redirect("/accounts", syncPlatformData(account))
 
@@ -526,7 +579,7 @@ async def import_accounts(request: Request, file: UploadFile = File(), csrf: str
         suffix = Path(file.filename or "").suffix.lower()
         if suffix not in {".csv", ".xlsx", ".xls"}:
             return redirect("/accounts", "请上传 CSV、XLSX 或 XLS 模板")
-        stored = BASE_DIR / "uploads" / f"accounts-{uuid.uuid4().hex}{suffix}"
+        stored = settings.storage_dir / "uploads" / f"accounts-{uuid.uuid4().hex}{suffix}"
         with stored.open("wb") as output:
             shutil.copyfileobj(file.file, output)
         try:
@@ -542,6 +595,7 @@ async def import_accounts(request: Request, file: UploadFile = File(), csrf: str
                 name = str(row.get("账号名称", row.get("name", ""))).strip()
                 external_id = str(row.get("账号ID", row.get("ID", row.get("external_id", "")))).strip()
                 manager_name = str(row.get("负责人", row.get("manager_name", ""))).strip()
+                business_type = str(row.get("业务类型", row.get("business_type", row.get("positioning", "")))).strip()
                 positioning = str(row.get("账号定位", row.get("positioning", ""))).strip()
                 data_source = str(row.get("数据获取方式", row.get("data_source", "manual"))).strip() or "manual"
                 if not platform or not name:
@@ -561,12 +615,14 @@ async def import_accounts(request: Request, file: UploadFile = File(), csrf: str
                         name=name,
                         external_id=external_id,
                         manager_name=manager_name,
+                        business_type=business_type,
                         positioning=positioning,
                         data_source=data_source,
                     )
                 )
                 imported += 1
             db.commit()
+            log_operation(db, current_actor(request, db), "导入", "账号", Path(file.filename or "data").name, f"新增 {imported} 个账号")
             return redirect("/accounts", f"批量导入完成：新增 {imported} 个账号")
         except Exception as exc:
             db.rollback()
@@ -642,7 +698,7 @@ async def upload_file(request: Request, account_id: int = Form(), file: UploadFi
             return redirect("/imports/upload", "请选择有效的平台账号")
         if not can(user, "import_data"):
             return redirect("/imports/upload", "你没有上传数据的权限")
-        stored = BASE_DIR / "uploads" / f"{uuid.uuid4().hex}{suffix}"
+        stored = settings.storage_dir / "uploads" / f"{uuid.uuid4().hex}{suffix}"
         with stored.open("wb") as output:
             shutil.copyfileobj(file.file, output)
         runtime = runtime_settings(db)
@@ -658,6 +714,7 @@ async def upload_file(request: Request, account_id: int = Form(), file: UploadFi
         )
         db.add(batch)
         db.flush()
+        log_operation(db, user, "上传", "上传记录", batch.original_filename, f"{account.platform} · {account.name}")
         try:
             columns, rows, mapping = preview(stored, account.platform, db)
             batch.mapping_json = json.dumps({"columns": columns, "rows": rows, "suggested": mapping}, ensure_ascii=False)
@@ -690,7 +747,7 @@ async def upload_multiple_files(request: Request):
             if suffix not in {".csv", ".xlsx", ".xls"}:
                 results.append({"name": file.filename, "status": "failed", "message": "格式不支持"})
                 continue
-            stored = BASE_DIR / "uploads" / f"{uuid.uuid4().hex}{suffix}"
+            stored = settings.storage_dir / "uploads" / f"{uuid.uuid4().hex}{suffix}"
             with stored.open("wb") as output:
                 shutil.copyfileobj(file.file, output)
             if stored.stat().st_size > runtime.max_upload_mb * 1024 * 1024:
@@ -706,6 +763,7 @@ async def upload_multiple_files(request: Request):
             )
             db.add(batch)
             db.flush()
+            log_operation(db, user, "上传", "上传记录", batch.original_filename, f"{account.platform} · {account.name}")
             try:
                 columns, rows, mapping = preview(stored, account.platform, db)
                 batch.mapping_json = json.dumps({"columns": columns, "rows": rows, "suggested": mapping}, ensure_ascii=False)
@@ -747,6 +805,7 @@ async def commit_import(batch_id: int, request: Request):
             return redirect("/imports", "导入记录状态不正确")
         try:
             count = import_batch(db, batch, mapping)
+            log_operation(db, current_actor(request, db), "导入", "上传记录", batch.original_filename, f"导入 {count} 行")
             db.commit()
             return redirect("/imports", f"成功导入 {count} 行数据")
         except Exception as exc:
@@ -759,13 +818,81 @@ async def commit_import(batch_id: int, request: Request):
 
 
 @app.get("/imports", response_class=HTMLResponse)
-def imports_page(request: Request, status: str = ""):
+def imports_page(
+    request: Request,
+    status: str = "",
+    platform: str = "",
+    account_id: int = 0,
+    start_date: str = "",
+    end_date: str = "",
+):
     with SessionLocal() as db:
         query = select(ImportBatch).where(ImportBatch.deleted_at.is_(None))
         if status:
             query = query.where(ImportBatch.status == status)
+        if platform:
+            query = query.join(PlatformAccount).where(PlatformAccount.platform == platform)
+        if account_id:
+            query = query.where(ImportBatch.account_id == account_id)
+        if start_date:
+            try:
+                query = query.where(ImportBatch.created_at >= datetime.combine(date.fromisoformat(start_date), datetime.min.time()))
+            except ValueError:
+                pass
+        if end_date:
+            try:
+                query = query.where(ImportBatch.created_at <= datetime.combine(date.fromisoformat(end_date), datetime.max.time()))
+            except ValueError:
+                pass
         batches = db.scalars(query.order_by(ImportBatch.created_at.desc()).limit(100)).all()
-        return page(request, "imports.html", db, batches=batches, status=status)
+        accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
+        return page(
+            request,
+            "imports.html",
+            db,
+            batches=batches,
+            status=status,
+            platforms=sorted({account.platform for account in accounts}),
+            selected_platform=platform,
+            selected_account_id=account_id,
+            start_date=start_date,
+            end_date=end_date,
+            accounts=accounts,
+        )
+
+
+@app.post("/imports/{batch_id}/retry")
+def retry_import(batch_id: int, request: Request, csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = current_actor(request, db)
+        if not actor or not can(actor, "import_data"):
+            return redirect("/imports", "没有权限")
+        batch = db.get(ImportBatch, batch_id)
+        if not batch or not batch.stored_path or not Path(batch.stored_path).exists():
+            return redirect("/imports", "原始文件不可用，无法重新上传")
+        suffix = Path(batch.stored_path).suffix.lower() or ".xlsx"
+        stored = settings.storage_dir / "uploads" / f"retry-{uuid.uuid4().hex}{suffix}"
+        shutil.copy2(batch.stored_path, stored)
+        new_batch = ImportBatch(
+            account_id=batch.account_id,
+            uploaded_by=actor.id,
+            original_filename=batch.original_filename,
+            stored_path=str(stored),
+            file_hash=file_sha256(stored),
+            status="preview",
+        )
+        db.add(new_batch)
+        db.flush()
+        try:
+            columns, rows, mapping = preview(stored, batch.account.platform, db)
+            new_batch.mapping_json = json.dumps({"columns": columns, "rows": rows, "suggested": mapping}, ensure_ascii=False)
+            log_operation(db, actor, "上传", "上传记录", new_batch.original_filename, f"重新上传至 {batch.account.platform} · {batch.account.name}")
+            db.commit()
+            return redirect(f"/imports/{new_batch.id}/preview", "已重新创建上传记录")
+        except Exception as exc:
+            db.rollback()
+            return redirect("/imports", f"重新上传失败：{exc}")
 
 
 @app.post("/imports/{batch_id}/delete")
@@ -778,6 +905,7 @@ def delete_import(batch_id: int, request: Request, csrf: str = Form()):
         if batch and batch.deleted_at is None:
             batch.deleted_at = datetime.now().replace(microsecond=0)
             batch.deleted_by = current_actor(request, db).id if current_actor(request, db) else None
+            log_operation(db, current_actor(request, db), "删除", "上传记录", batch.original_filename, f"状态：{batch.status}")
             db.commit()
         if batch and batch.stored_path and Path(batch.stored_path).exists():
             Path(batch.stored_path).unlink()
@@ -793,6 +921,7 @@ def clear_failed_imports(request: Request, csrf: str = Form()):
         failed_batches = db.scalars(select(ImportBatch).where(ImportBatch.status == "failed", ImportBatch.deleted_at.is_(None))).all()
         for batch in failed_batches:
             batch.deleted_at = datetime.now().replace(microsecond=0)
+            log_operation(db, current_actor(request, db), "删除", "上传记录", batch.original_filename, "清理失败记录")
             if batch.stored_path and Path(batch.stored_path).exists():
                 Path(batch.stored_path).unlink()
         db.commit()
@@ -814,6 +943,7 @@ def rollback_import(batch_id: int, request: Request, csrf: str = Form()):
         db.query(ContentDailyMetric).filter(ContentDailyMetric.source_batch_id == batch.id).delete(synchronize_session=False)
         batch.status = "rolled_back"
         batch.deleted_at = None
+        log_operation(db, current_actor(request, db), "编辑", "上传记录", batch.original_filename, "回滚最近导入")
         db.commit()
     return redirect("/imports", "最近一次导入已回滚")
 
@@ -986,6 +1116,7 @@ def refresh_hotspots(request: Request, csrf: str = Form()):
         if not require_permission(request, db, "manage_hotspots"):
             return redirect("/hotspots", "没有权限")
         report = generate_hotspots(db)
+        log_operation(db, current_actor(request, db), "生成", "热点", report.report_date.isoformat(), "刷新热点")
         db.commit()
         if report.status == "failed":
             return redirect("/hotspots", report.error_message)
@@ -1002,6 +1133,7 @@ def create_report(request: Request, report_date: str = Form(""), csrf: str = For
         try:
             target = date.fromisoformat(report_date) if report_date else None
             report = generate_report(db, target=target, use_latest=not bool(target))
+            log_operation(db, current_actor(request, db), "生成", "日报", report.title, f"日期：{report.report_date}")
             db.commit()
             return redirect(f"/reports/{report.id}", "日报已生成")
         except Exception as exc:
@@ -1018,6 +1150,7 @@ def create_summary_report(request: Request, period_type: str = Form(), report_da
         try:
             target = date.fromisoformat(report_date) if report_date else None
             report = generate_summary_report(db, period_type=period_type, target=target)
+            log_operation(db, current_actor(request, db), "生成", "周月报", report.title, f"周期：{period_type}")
             db.commit()
             return redirect(f"/summary-reports/{report.id}", f"{'周报' if period_type == 'weekly' else '月报'}已生成")
         except Exception as exc:
@@ -1034,6 +1167,25 @@ def report_detail(report_id: int, request: Request):
         return page(request, "report_detail.html", db, report=report)
 
 
+@app.post("/reports/{report_id}/edit")
+def edit_report(report_id: int, request: Request, title: str = Form(""), markdown_content: str = Form(""), csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = require_permission(request, db, "manage_reports")
+        if not actor:
+            return redirect("/reports", "没有权限")
+        report = db.get(Report, report_id)
+        if not report or report.deleted_at:
+            return redirect("/reports", "报告不存在")
+        report.title = title.strip() or report.title
+        report.markdown_content = markdown_content.strip()
+        report.html_content = md.markdown(report.markdown_content, extensions=["tables", "fenced_code"])
+        report.updated_at = datetime.now().replace(microsecond=0)
+        log_operation(db, actor, "编辑", "报告", report.title, "手动编辑日报内容")
+        db.commit()
+    return redirect(f"/reports/{report_id}", "报告已保存")
+
+
 @app.get("/reports/{report_id}/markdown")
 def download_markdown(report_id: int, request: Request):
     with SessionLocal() as db:
@@ -1042,6 +1194,8 @@ def download_markdown(report_id: int, request: Request):
         report = db.get(Report, report_id)
         if not report:
             return redirect("/reports", "报告不存在")
+        log_operation(db, current_user(request, db), "导出", "报告", report.title, "导出 Markdown")
+        db.commit()
         from fastapi.responses import Response
 
         return Response(
@@ -1059,6 +1213,8 @@ def download_pdf(report_id: int, request: Request):
         report = db.get(Report, report_id)
         if not report or not report.pdf_path or not Path(report.pdf_path).exists():
             return redirect(f"/reports/{report_id}", "PDF 暂时不可用，请重新生成报告")
+        log_operation(db, current_user(request, db), "导出", "报告", report.title, "导出 PDF")
+        db.commit()
         return FileResponse(report.pdf_path, filename=f"daily-{report.report_date}.pdf", media_type="application/pdf")
 
 
@@ -1088,6 +1244,7 @@ def rename_report(report_id: int, request: Request, title: str = Form(), csrf: s
         if not report or report.deleted_at:
             return redirect("/reports", "报告不存在")
         report.title = title.strip() or report.title
+        log_operation(db, current_actor(request, db), "编辑", "报告", report.title, "重命名日报")
         db.commit()
     return redirect("/reports", "报告名称已更新")
 
@@ -1103,6 +1260,7 @@ def delete_report(report_id: int, request: Request, csrf: str = Form()):
         if report and not report.deleted_at:
             report.deleted_at = datetime.now().replace(microsecond=0)
             report.deleted_by = actor.id
+            log_operation(db, actor, "删除", "报告", report.title, "删除日报")
             db.commit()
     return redirect("/reports", "报告已删除")
 
@@ -1116,6 +1274,25 @@ def summary_report_detail(report_id: int, request: Request):
         return page(request, "report_detail.html", db, report=report)
 
 
+@app.post("/summary-reports/{report_id}/edit")
+def edit_summary_report(report_id: int, request: Request, title: str = Form(""), markdown_content: str = Form(""), csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = require_permission(request, db, "manage_reports")
+        if not actor:
+            return redirect("/reports", "没有权限")
+        report = db.get(SummaryReport, report_id)
+        if not report or report.deleted_at:
+            return redirect("/reports", "报告不存在")
+        report.title = title.strip() or report.title
+        report.markdown_content = markdown_content.strip()
+        report.html_content = md.markdown(report.markdown_content, extensions=["tables", "fenced_code"])
+        report.updated_at = datetime.now().replace(microsecond=0)
+        log_operation(db, actor, "编辑", "周月报", report.title, "手动编辑周报/月报内容")
+        db.commit()
+    return redirect(f"/summary-reports/{report_id}", "报告已保存")
+
+
 @app.post("/summary-reports/{report_id}/rename")
 def rename_summary_report(report_id: int, request: Request, title: str = Form(), csrf: str = Form()):
     verify_csrf(request, csrf)
@@ -1126,6 +1303,7 @@ def rename_summary_report(report_id: int, request: Request, title: str = Form(),
         if not report or report.deleted_at:
             return redirect("/reports", "报告不存在")
         report.title = title.strip() or report.title
+        log_operation(db, current_actor(request, db), "编辑", "周月报", report.title, "重命名周报/月报")
         db.commit()
     return redirect("/reports", "报告名称已更新")
 
@@ -1141,6 +1319,7 @@ def delete_summary_report(report_id: int, request: Request, csrf: str = Form()):
         if report and not report.deleted_at:
             report.deleted_at = datetime.now().replace(microsecond=0)
             report.deleted_by = actor.id
+            log_operation(db, actor, "删除", "周月报", report.title, "删除周报/月报")
             db.commit()
     return redirect("/reports", "报告已删除")
 
@@ -1153,6 +1332,8 @@ def summary_report_pdf(report_id: int, request: Request):
         report = db.get(SummaryReport, report_id)
         if not report or not report.pdf_path or not Path(report.pdf_path).exists():
             return redirect(f"/summary-reports/{report_id}", "PDF 暂时不可用")
+        log_operation(db, current_user(request, db), "导出", "周月报", report.title, "导出 PDF")
+        db.commit()
         return FileResponse(report.pdf_path, filename=f"summary-{report.end_date}.pdf", media_type="application/pdf")
 
 
@@ -1164,6 +1345,8 @@ def summary_report_markdown(report_id: int, request: Request):
         report = db.get(SummaryReport, report_id)
         if not report:
             return redirect("/reports", "报告不存在")
+        log_operation(db, current_user(request, db), "导出", "周月报", report.title, "导出 Markdown")
+        db.commit()
         from fastapi.responses import Response
 
         return Response(
@@ -1200,6 +1383,10 @@ def _topic_business(keyword: str) -> str:
     if "学历" in value or "提升" in value:
         return "成人学历"
     return "其他"
+
+
+def _topic_status_options() -> list[str]:
+    return ["待拍摄", "已拍摄", "已发布", "已放弃"]
 
 
 @app.get("/ai-review", response_class=HTMLResponse)
@@ -1264,6 +1451,7 @@ def generate_ai_review(
             copy_text=result["copy_text"],
         )
         db.add(report)
+        log_operation(db, current_actor(request, db), "生成", "AI复盘", f"{range_type} · {platform or '全部平台'}", "生成 AI 复盘")
         db.commit()
         accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None), PlatformAccount.is_active.is_(True)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
         reports = db.scalars(select(AiReview).order_by(AiReview.created_at.desc()).limit(8)).all()
@@ -1345,6 +1533,7 @@ def generate_report_builder(
             ppt_outline="1. 数据概览\n2. 核心变化\n3. 问题与风险\n4. 下阶段计划",
         )
         db.add(draft)
+        log_operation(db, current_actor(request, db), "生成", "报告草稿", title, "生成周报/月报草稿")
         db.commit()
         accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None), PlatformAccount.is_active.is_(True)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
         drafts = db.scalars(select(GeneratedReportDraft).order_by(GeneratedReportDraft.created_at.desc()).limit(8)).all()
@@ -1355,7 +1544,145 @@ def generate_report_builder(
 def topic_center_page(request: Request, keyword: str = "", business: str = "无人机足球"):
     with SessionLocal() as db:
         topics = db.scalars(select(TopicIdea).order_by(TopicIdea.created_at.desc()).limit(40)).all()
-        return page(request, "topic_center.html", db, topics=topics, keyword=keyword, business=business)
+        return page(
+            request,
+            "topic_center.html",
+            db,
+            topics=topics,
+            keyword=keyword,
+            business=business,
+            topic_status_options=_topic_status_options(),
+        )
+
+
+@app.post("/topic-center")
+def add_topic_idea(
+    request: Request,
+    title: str = Form(),
+    platform: str = Form("抖音"),
+    business: str = Form("其他"),
+    content_type: str = Form("科普"),
+    reference_link: str = Form(""),
+    owner_name: str = Form(""),
+    priority: str = Form("B"),
+    status: str = Form("待拍摄"),
+    note: str = Form(""),
+    angle: str = Form(""),
+    script_direction: str = Form(""),
+    csrf: str = Form(),
+):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = current_actor(request, db)
+        if not actor or not can(actor, "use_topic_center"):
+            return redirect("/topic-center", "没有权限")
+        if not title.strip():
+            return redirect("/topic-center", "标题不能为空")
+        item = TopicIdea(
+            title=title.strip(),
+            platform=platform.strip(),
+            business=business.strip() or "其他",
+            content_type=content_type.strip() or "科普",
+            reference_link=reference_link.strip(),
+            owner_name=owner_name.strip(),
+            priority=priority.strip() or "B",
+            status=status.strip() or "待拍摄",
+            note=note.strip(),
+            angle=angle.strip(),
+            script_direction=script_direction.strip(),
+        )
+        db.add(item)
+        log_operation(db, actor, "新增", "选题", item.title, f"平台：{item.platform}；负责人：{item.owner_name}")
+        db.commit()
+    return redirect("/topic-center", "选题已添加")
+
+
+@app.post("/topic-center/{topic_id}/edit")
+def edit_topic_idea(
+    topic_id: int,
+    request: Request,
+    title: str = Form(),
+    platform: str = Form(""),
+    business: str = Form(""),
+    content_type: str = Form(""),
+    reference_link: str = Form(""),
+    owner_name: str = Form(""),
+    priority: str = Form("B"),
+    status: str = Form("待拍摄"),
+    note: str = Form(""),
+    angle: str = Form(""),
+    script_direction: str = Form(""),
+    csrf: str = Form(),
+):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = current_actor(request, db)
+        if not actor or not can(actor, "use_topic_center"):
+            return redirect("/topic-center", "没有权限")
+        topic = db.get(TopicIdea, topic_id)
+        if not topic:
+            return redirect("/topic-center", "选题不存在")
+        if not title.strip():
+            return redirect("/topic-center", "标题不能为空")
+        topic.title = title.strip()
+        topic.platform = platform.strip()
+        topic.business = business.strip() or "其他"
+        topic.content_type = content_type.strip() or "科普"
+        topic.reference_link = reference_link.strip()
+        topic.owner_name = owner_name.strip()
+        topic.priority = priority.strip() or "B"
+        topic.status = status.strip() or "待拍摄"
+        topic.note = note.strip()
+        topic.angle = angle.strip()
+        topic.script_direction = script_direction.strip()
+        log_operation(db, actor, "编辑", "选题", topic.title, f"平台：{topic.platform}；状态：{topic.status}")
+        db.commit()
+    return redirect("/topic-center", "选题已更新")
+
+
+@app.post("/topic-center/{topic_id}/favorite")
+def favorite_topic_idea(topic_id: int, request: Request, csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = current_actor(request, db)
+        if not actor or not can(actor, "use_topic_center"):
+            return redirect("/topic-center", "没有权限")
+        topic = db.get(TopicIdea, topic_id)
+        if topic:
+            topic.is_favorite = not topic.is_favorite
+            log_operation(db, actor, "收藏", "选题", topic.title, "标记收藏" if topic.is_favorite else "取消收藏")
+            db.commit()
+    return redirect("/topic-center", "收藏状态已更新")
+
+
+@app.post("/topic-center/{topic_id}/status")
+def update_topic_status(topic_id: int, request: Request, status: str = Form(), csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = current_actor(request, db)
+        if not actor or not can(actor, "use_topic_center"):
+            return redirect("/topic-center", "没有权限")
+        topic = db.get(TopicIdea, topic_id)
+        if topic:
+            topic.status = status.strip() or topic.status
+            log_operation(db, actor, "编辑", "选题", topic.title, f"状态：{topic.status}")
+            db.commit()
+    return redirect("/topic-center", "状态已更新")
+
+
+@app.post("/topic-center/{topic_id}/delete")
+def delete_topic_idea(topic_id: int, request: Request, csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = current_actor(request, db)
+        if not actor or not can(actor, "use_topic_center"):
+            return redirect("/topic-center", "没有权限")
+        topic = db.get(TopicIdea, topic_id)
+        if topic:
+            log_operation(db, actor, "删除", "选题", topic.title, f"平台：{topic.platform}")
+            db.delete(topic)
+            db.commit()
+    return redirect("/topic-center", "选题已删除")
 
 
 @app.post("/topic-center/generate")
@@ -1374,7 +1701,7 @@ def generate_topic_center(
         created = 0
         base_business = business if business and business != "其他" else _topic_business(keyword)
         content_types = ["科普", "招生", "活动", "热点", "故事", "成交案例"]
-        platforms = ["抖音", "小红书", "视频号", "公众号", "其他自定义平台"]
+        platforms = ["抖音", "小红书", "视频号", "公众号", "其他"]
         for index in range(20):
             hot = hot_topics[index % len(hot_topics)]
             title = f"{keyword or base_business} 选题 {index + 1}：{hot['topic']}"
@@ -1385,7 +1712,7 @@ def generate_topic_center(
                     content_type=content_types[index % len(content_types)],
                     platform="、".join(platforms[index % 3 : index % 3 + 2]),
                     priority="S" if index < 4 else ("A" if index < 12 else "B"),
-                    status="待写",
+                    status="待拍摄",
                     reference_link=hot["reference"],
                     note=hot["trend"],
                     angle=hot["angle"],
@@ -1394,6 +1721,7 @@ def generate_topic_center(
                 )
             )
             created += 1
+        log_operation(db, current_actor(request, db), "生成", "选题", keyword or base_business, f"新增 {created} 条选题")
         db.commit()
         topics = db.scalars(select(TopicIdea).order_by(TopicIdea.created_at.desc()).limit(40)).all()
         return page(request, "topic_center.html", db, topics=topics, keyword=keyword, business=base_business, message=f"已生成 {created} 个选题")
@@ -1416,7 +1744,7 @@ def breakdown_page(request: Request, q: str = "", platform: str = ""):
         eta = "预计 8 分钟" if total_cases else "预计 1 分钟"
         recent_cases = cases[:5]
         hot_rankings = sorted(cases, key=lambda item: item.views or 0, reverse=True)[:5]
-        selected_platform = platform if platform in {"抖音", "小红书", "视频号", "公众号", "其他自定义平台"} else ""
+        selected_platform = platform if platform in {"抖音", "小红书", "视频号", "公众号", "其他"} else ""
         return page(
             request,
             "breakdown.html",
@@ -1578,7 +1906,7 @@ async def add_material(request: Request, csrf: str = Form(), name: str = Form(),
         file_path = ""
         if file and file.filename:
             suffix = Path(file.filename).suffix.lower()
-            stored = BASE_DIR / "uploads" / f"material-{uuid.uuid4().hex}{suffix}"
+            stored = settings.storage_dir / "uploads" / f"material-{uuid.uuid4().hex}{suffix}"
             with stored.open("wb") as output:
                 shutil.copyfileobj(file.file, output)
             file_name = Path(file.filename).name
@@ -1709,13 +2037,18 @@ def users_page(request: Request):
 def add_user(request: Request, username: str = Form(), display_name: str = Form(), password: str = Form(), role: str = Form(), csrf: str = Form()):
     verify_csrf(request, csrf)
     with SessionLocal() as db:
-        if not require_permission(request, db, "manage_members"):
+        actor = require_permission(request, db, "manage_members")
+        if not actor:
             return redirect("/", "没有权限")
+        if not username.strip() or not display_name.strip():
+            return redirect("/users", "用户名和显示名称不能为空")
         if len(password) < 8:
             return redirect("/users", "密码至少需要 8 位")
         if db.scalar(select(User).where(User.username == username.strip())):
             return redirect("/users", "用户名已经存在")
-        db.add(User(username=username.strip(), display_name=display_name.strip(), password_hash=hash_password(password), role=normalize_role(role)))
+        user = User(username=username.strip(), display_name=display_name.strip(), password_hash=hash_password(password), role=normalize_role(role))
+        db.add(user)
+        log_operation(db, actor, "新增", "成员", user.username, f"角色：{role_label(user.role)}")
         db.commit()
     return redirect("/users", "成员已添加")
 
@@ -1738,6 +2071,8 @@ def edit_user(
         user = db.get(User, user_id)
         if not user or user.deleted_at:
             return redirect("/users", "成员不存在")
+        if not username.strip() or not display_name.strip():
+            return redirect("/users", "用户名和显示名称不能为空")
         duplicate = db.scalar(select(User).where(User.id != user_id, User.username == username.strip()))
         if duplicate:
             return redirect("/users", "用户名已经存在")
@@ -1748,6 +2083,7 @@ def edit_user(
             if len(password.strip()) < 8:
                 return redirect("/users", "初始密码至少需要 8 位")
             user.password_hash = hash_password(password.strip())
+        log_operation(db, actor, "编辑", "成员", user.username, f"角色：{role_label(user.role)}")
         db.commit()
     return redirect("/users", "成员已更新")
 
@@ -1765,6 +2101,7 @@ def toggle_user(user_id: int, request: Request, csrf: str = Form()):
         if user.id == actor.id:
             return redirect("/users", "不能停用当前登录账号")
         user.is_active = not user.is_active
+        log_operation(db, actor, "启用" if user.is_active else "停用", "成员", user.username, f"显示名称：{user.display_name}")
         db.commit()
     return redirect("/users", "成员状态已更新")
 
@@ -1784,8 +2121,9 @@ def delete_user(user_id: int, request: Request, csrf: str = Form()):
         user.deleted_at = datetime.now().replace(microsecond=0)
         user.deleted_by = actor.id
         user.is_active = False
+        log_operation(db, actor, "删除", "成员", user.username, f"显示名称：{user.display_name}")
         db.commit()
-    return redirect("/users", "成员已放入回收站")
+    return redirect("/users", "成员已删除")
 
 
 @app.post("/users/{user_id}/restore")
@@ -2012,3 +2350,15 @@ def bulk_delete_recipients(request: Request, recipient_ids: str = Form(""), csrf
             db.delete(recipient)
         db.commit()
     return redirect("/settings", "已批量删除收件人")
+
+
+@app.get("/logs", response_class=HTMLResponse)
+def logs_page(request: Request, operation_type: str = "", object_type: str = ""):
+    with SessionLocal() as db:
+        query = select(OperationLog)
+        if operation_type:
+            query = query.where(OperationLog.operation_type == operation_type)
+        if object_type:
+            query = query.where(OperationLog.object_type == object_type)
+        logs = db.scalars(query.order_by(OperationLog.created_at.desc()).limit(100)).all()
+        return page(request, "logs.html", db, logs=logs, operation_type=operation_type, object_type=object_type)

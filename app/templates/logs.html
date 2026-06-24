@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}操作日志 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <p class="section-note">审计追踪</p>
+    <h1>操作日志</h1>
+    <p>记录新增、编辑、删除、启用、停用、上传和导出等关键动作。</p>
+  </div>
+</section>
+
+<section class="panel u-mb-16">
+  <form class="panel-head" method="get" action="/logs">
+    <select name="operation_type">
+      <option value="">全部操作</option>
+      {% for item in ['新增','编辑','删除','启用','停用','上传','导入','生成','收藏','导出'] %}
+      <option value="{{ item }}" {% if operation_type == item %}selected{% endif %}>{{ item }}</option>
+      {% endfor %}
+    </select>
+    <select name="object_type">
+      <option value="">全部对象</option>
+      {% for item in ['账号','成员','上传记录','日报','周月报','选题','报告'] %}
+      <option value="{{ item }}" {% if object_type == item %}selected{% endif %}>{{ item }}</option>
+      {% endfor %}
+    </select>
+    <button class="button secondary">筛选</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>操作人</th><th>操作类型</th><th>对象</th><th>对象名称</th><th>详情</th></tr></thead>
+      <tbody>
+        {% for item in logs %}
+        <tr>
+          <td>{{ item.created_at.strftime('%m-%d %H:%M') }}</td>
+          <td>{{ item.operator_name }}</td>
+          <td>{{ item.operation_type }}</td>
+          <td>{{ item.object_type }}</td>
+          <td class="title-cell">{{ item.object_name }}</td>
+          <td class="title-cell">{{ item.detail or '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6"><div class="empty-table"><strong>还没有日志</strong><span>执行新增、编辑、删除或导出后，这里会自动记录。</span></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

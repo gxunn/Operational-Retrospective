@@ -192,7 +192,9 @@ def ai_analysis(stats: dict, settings) -> tuple[str, str]:
 
 
 def render_pdf(report: Report | SummaryReport) -> str:
-    output_dir = BASE_DIR / "reports"
+    from ..config import settings
+
+    output_dir = settings.storage_dir / "reports"
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = getattr(report, "report_date", None) or getattr(report, "end_date", None)
     target = output_dir / f"report-{stamp.isoformat()}.pdf"

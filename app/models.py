@@ -21,6 +21,7 @@ class User(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 
 class PlatformAccount(Base):
@@ -30,6 +31,7 @@ class PlatformAccount(Base):
     name: Mapped[str] = mapped_column(String(100))
     external_id: Mapped[str] = mapped_column(String(120), default="")
     manager_name: Mapped[str] = mapped_column(String(80), default="")
+    business_type: Mapped[str] = mapped_column(String(80), default="")
     positioning: Mapped[str] = mapped_column(String(255), default="")
     data_source: Mapped[str] = mapped_column(String(30), default="manual")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -37,6 +39,7 @@ class PlatformAccount(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     __table_args__ = (UniqueConstraint("platform", "name", name="uq_platform_account"),)
 
 
@@ -58,6 +61,7 @@ class ImportBatch(Base):
     imported_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     account: Mapped[PlatformAccount] = relationship()
     uploader: Mapped[User] = relationship()
 
@@ -147,14 +151,17 @@ class TopicIdea(Base):
     business: Mapped[str] = mapped_column(String(50), default="其他")
     content_type: Mapped[str] = mapped_column(String(30), default="科普")
     platform: Mapped[str] = mapped_column(String(120), default="")
+    owner_name: Mapped[str] = mapped_column(String(80), default="")
     priority: Mapped[str] = mapped_column(String(10), default="B")
-    status: Mapped[str] = mapped_column(String(20), default="待写")
+    status: Mapped[str] = mapped_column(String(20), default="待拍摄")
     reference_link: Mapped[str] = mapped_column(String(500), default="")
     note: Mapped[str] = mapped_column(Text, default="")
     angle: Mapped[str] = mapped_column(Text, default="")
     script_direction: Mapped[str] = mapped_column(Text, default="")
     is_ai_generated: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class VideoBreakdown(Base):
@@ -227,6 +234,18 @@ class SummaryReport(Base):
     deleted_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class OperationLog(Base):
+    __tablename__ = "operation_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    operator_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    operator_name: Mapped[str] = mapped_column(String(120), default="")
+    operation_type: Mapped[str] = mapped_column(String(40), index=True)
+    object_type: Mapped[str] = mapped_column(String(40), index=True)
+    object_name: Mapped[str] = mapped_column(String(200), default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
 
 
 class HotspotReport(Base):

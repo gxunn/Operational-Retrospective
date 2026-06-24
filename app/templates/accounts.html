@@ -4,11 +4,10 @@
 <section class="page-heading">
   <div>
     <p class="section-note">平台账号管理</p>
-    <h1>{% if in_trash %}账号回收站{% else %}平台账号管理{% endif %}</h1>
-    <p>{% if in_trash %}仅超级管理员可恢复或彻底删除。{% else %}支持新增多个平台账号、同步占位按钮和批量管理。{% endif %}</p>
+    <h1>{% if in_trash %}已删除账号{% else %}平台账号管理{% endif %}</h1>
+    <p>{% if in_trash %}这里仅保留已删除记录，主列表中不会再出现。{% else %}支持新增、编辑、删除、启用、停用和批量操作。{% endif %}</p>
   </div>
   <div class="heading-actions">
-    {% if not in_trash %}<a class="button secondary" href="/accounts/trash">查看回收站</a>{% endif %}
     {% if in_trash %}<a class="button secondary" href="/accounts">返回账号列表</a>{% endif %}
   </div>
 </section>
@@ -28,6 +27,7 @@
       <label>账号名称<input name="name" placeholder="例如：品牌主账号" required></label>
       <label>账号ID<input name="external_id" placeholder="平台账号 ID"></label>
       <label>负责人<input name="manager_name" placeholder="运营负责人"></label>
+      <label>业务类型<input name="business_type" placeholder="例如：品牌宣传 / 获客转化"></label>
       <label>账号定位<textarea name="positioning" rows="3" placeholder="账号定位、内容方向、目标人群"></textarea></label>
       <label>数据获取方式
         <select name="data_source">
@@ -89,8 +89,10 @@
             <strong>{{ account.name }}</strong>
             <small>ID #{{ account.id }} · {{ account.platform }}{% if account.external_id %} · {{ account.external_id }}{% endif %}</small>
             <small>负责人：{{ account.manager_name or '未填写' }} · {{ account.positioning or '未填写定位' }}</small>
+            <small>业务类型：{{ account.business_type or '未填写' }}</small>
             <small>数据方式：{{ {'manual':'手动上传','api':'API对接','semi_auto':'半自动录入'}.get(account.data_source, account.data_source) }}</small>
             <small>上次同步：{{ account.last_synced_at.strftime('%Y-%m-%d %H:%M') if account.last_synced_at else '尚未同步' }}</small>
+            <small>更新时间：{{ account.updated_at.strftime('%Y-%m-%d %H:%M') if account.updated_at else '—' }}</small>
           </div>
           <span class="status-dot {{ 'on' if account.is_active else 'off' }}">{{ '启用' if account.is_active else '停用' }}</span>
         </div>
@@ -102,6 +104,7 @@
             <input name="name" value="{{ account.name }}" placeholder="名称">
             <input name="external_id" value="{{ account.external_id }}" placeholder="平台 ID">
             <input name="manager_name" value="{{ account.manager_name }}" placeholder="负责人">
+            <input name="business_type" value="{{ account.business_type }}" placeholder="业务类型">
             <input name="positioning" value="{{ account.positioning }}" placeholder="账号定位">
             <select name="data_source">
               <option value="manual" {% if account.data_source == 'manual' %}selected{% endif %}>手动上传</option>
@@ -118,7 +121,7 @@
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
             <button class="text-button">自动同步数据</button>
           </form>
-          <form method="post" action="/accounts/{{ account.id }}/delete" data-confirm="确认将该账号放入回收站吗？">
+          <form method="post" action="/accounts/{{ account.id }}/delete" data-confirm="确认永久删除该账号吗？删除后列表中不会恢复。">
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
             <button class="text-button">删除</button>
           </form>
@@ -140,10 +143,7 @@
     <div class="simple-row">
       <span class="platform-mark">{{ account.platform[:1] }}</span>
       <div><strong>{{ account.name }}</strong><small>{{ account.platform }}{% if account.external_id %} · {{ account.external_id }}{% endif %}</small></div>
-      {% if can_manage_accounts %}
-      <form method="post" action="/accounts/{{ account.id }}/restore"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">恢复</button></form>
-      <form method="post" action="/accounts/{{ account.id }}/purge" data-confirm="确认彻底删除该账号吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">彻底删除</button></form>
-      {% endif %}
+      {% if can_manage_accounts %}<form method="post" action="/accounts/{{ account.id }}/purge" data-confirm="确认彻底删除该账号吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">彻底删除</button></form>{% endif %}
     </div>
     {% else %}
     <div class="empty-inline">回收站为空</div>

@@ -1,6 +1,6 @@
 {% extends "base.html" %}{% block title %}团队权限 · {{ app_name }}{% endblock %}
 {% block content %}
-<section class="page-heading"><div><p class="section-note">权限管理</p><h1>团队权限</h1><p>角色仅保留超级管理员和运营人员，删除与彻底删除仅限超级管理员。</p></div></section>
+<section class="page-heading"><div><p class="section-note">权限管理</p><h1>团队权限</h1><p>角色仅保留超级管理员和运营人员。运营人员只保留查看、上传与复盘权限。</p></div></section>
 <div class="two-column">
   <section class="panel form-panel">
     <h2>添加成员</h2>
@@ -36,7 +36,7 @@
           <span class="status-dot">{{ '超级管理员' if member.role == 'superadmin' else '运营人员' }}</span>
           <form method="post" action="/users/{{ member.id }}/toggle"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">{{ '停用' if member.is_active else '启用' }}</button></form>
           {% if member.id != user.id %}
-          <form method="post" action="/users/{{ member.id }}/delete" data-confirm="确认将该成员放入回收站吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">删除</button></form>
+          <form method="post" action="/users/{{ member.id }}/delete" data-confirm="确认永久删除该成员吗？删除后不会恢复。"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">删除</button></form>
           {% endif %}
         </div>
         {% else %}
@@ -49,21 +49,4 @@
     </div>
   </section>
 </div>
-<section class="panel u-mt-24">
-    <div class="panel-head"><div><h2>成员回收站</h2><p>30 天内可恢复</p></div></div>
-    <div class="simple-list">
-      {% for member in trash %}
-      <div class="simple-row">
-        <span class="avatar">{{ (member.display_name or member.username)[:1] }}</span>
-        <div><strong>{{ member.display_name or member.username }}</strong><small>@{{ member.username }}</small></div>
-        {% if can_manage_members %}
-        <form method="post" action="/users/{{ member.id }}/restore"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">恢复</button></form>
-        <form method="post" action="/users/{{ member.id }}/purge" data-confirm="确认彻底删除该成员吗？"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">彻底删除</button></form>
-        {% endif %}
-      </div>
-      {% else %}
-      <div class="empty-inline">回收站为空</div>
-    {% endfor %}
-  </div>
-</section>
 {% endblock %}

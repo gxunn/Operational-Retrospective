@@ -1,6 +1,6 @@
 # 自媒体账号每日复盘系统
 
-这是一个适合小团队使用的网页后台：每天上传抖音、小红书、视频号、公众号、B站等平台导出的 CSV/Excel，系统会清洗数据、计算前日和近 7 日对比，并生成中文复盘报告。
+这是一个适合小团队使用的网页后台：每天上传抖音、小红书、视频号、公众号等平台导出的 CSV/Excel，系统会清洗数据、计算前日和近 7 日对比，并生成中文复盘报告。当前版本已经是完整的后端应用，不再是纯静态页面。
 
 ## 项目类型与部署结论
 
@@ -9,10 +9,12 @@
 - 后端：FastAPI + SQLAlchemy + SQLite
 - 页面：Jinja2 + 原生 JavaScript/CSS
 - 后台能力：登录、文件上传、定时任务、邮件、OpenAI 报告、PDF 导出
+- 后台能力：登录、文件上传、定时任务、邮件、OpenAI 报告、PDF 导出、操作日志
 - 前端没有 `package.json`，不需要运行 `npm install` 或 `npm run build`
 - 页面由 Python 服务动态生成，因此根目录不需要 `index.html`
+- 账号、团队、上传记录、周/月报、选题和操作日志都会持久保存到 SQLite
 
-推荐使用 Docker 部署到 Ubuntu 服务器。Cloudflare 可以用于域名解析、CDN 和 HTTPS，但不能只用 Cloudflare Pages 承载本项目，原因见“Cloudflare 部署说明”。
+推荐使用 Railway 部署。它支持 Docker 和持久化磁盘，适合当前这个 SQLite 方案。Cloudflare 可以用于域名解析、CDN 和 HTTPS，但不能只用 Cloudflare Pages 承载本项目，原因见“Cloudflare 部署说明”。
 
 ## 一、最快的本地运行方法
 
@@ -46,7 +48,15 @@ py -3.12 -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-### 4. 配置 `.env`
+### 4. 初始化数据库
+
+首次运行或换机器后，先执行：
+
+```bash
+python3 scripts/init_db.py
+```
+
+### 5. 配置 `.env`
 
 项目已经有本地 `.env`。请参考 `.env.example` 补充这些内容：
 
@@ -59,7 +69,7 @@ python -m pip install -r requirements.txt
 
 如果要发邮件，还要填写 `SMTP_HOST`、`SMTP_USERNAME`、`SMTP_PASSWORD` 和 `MAIL_FROM`。QQ/163 邮箱通常需要使用邮箱后台生成的“授权码”，不是网页登录密码。
 
-### 5. 启动
+### 6. 启动
 
 ```bash
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
@@ -75,6 +85,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 4. 在预览页确认每一列对应的指标，然后点击“确认并导入”。
 5. 打开“复盘报告”，点击“生成日报”。
 6. 在“系统设置”添加收件邮箱；配置好 SMTP 后即可发送。
+7. 在“操作日志”里查看新增、编辑、删除、上传和导出记录。
 
 含“内容标题”的表格会被识别成内容明细，并自动汇总成账号日报。没有标题、只有指标的表格会直接作为账号日报导入。
 
@@ -121,60 +132,64 @@ dist
 
 - `main` 分支更新后，只要 Cloudflare Pages 连接了这个仓库，就会自动重新构建并发布。
 - `dist/_redirects` 已处理页面刷新，直接访问 `/metrics`、`/ai-review`、`/accounts` 等路径不会 404。
-- 这个静态版本保留了现有页面样式和展示结构，但不包含 FastAPI 的服务端写入能力。
+- 这个静态版本只适合作为展示稿，不包含 FastAPI 的服务端写入能力。
 - 如果你还要保留本地完整版，继续使用 `uvicorn app.main:app --reload` 即可。
 
-## 五、部署到 Ubuntu 服务器（推荐）
+## 五、Railway 部署步骤
 
-推荐 Ubuntu 24.04、2 核 CPU、2GB 内存、20GB 磁盘，并准备一个已经解析到服务器 IP 的域名。
+Railway 会直接读取仓库里的 `Dockerfile`。你只需要按下面顺序点。
 
-### 1. 安装 Docker
+### 1. 登录 Railway
 
-按照 Docker 官方 Ubuntu 安装说明安装 Docker Engine 和 Compose 插件。
+打开 Railway 官网，先登录你的账号。
 
-### 2. 获取项目
+### 2. 新建项目
 
-通过 GitHub 克隆项目到服务器，例如 `/opt/self-media-review`。不要把本地真实 `.env` 发到公开代码仓库；应在服务器单独创建 `.env.production`：
+点右上角的 `New Project`。
 
-```bash
-git clone 你的GitHub仓库地址 /opt/self-media-review
-cd /opt/self-media-review
-cp .env.production.example .env.production
+### 3. 选择代码仓库
+
+点 `Deploy from GitHub repo`，然后选择这个项目仓库。
+
+### 4. 添加磁盘
+
+在项目里新增一个持久化磁盘，挂载路径填：
+
+```text
+/data
 ```
 
-### 3. 修改生产配置
+### 5. 填环境变量
 
-编辑 `.env.production`，至少设置：
+到变量设置里，填这几项：
 
 ```dotenv
-ADMIN_USERNAME=你的管理员账号
-ADMIN_PASSWORD=至少12位强密码
-SESSION_SECRET=至少32位随机字符
+DATABASE_URL=sqlite:////data/app.db
+STORAGE_DIR=/data
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123456
 COOKIE_SECURE=true
-DOMAIN=report.example.com
-OPENAI_API_KEY=你的密钥
-OPENAI_MODEL=gpt-5.4-mini
+SESSION_SECRET=一串足够长的随机字符
 ```
 
-### 4. 启动 HTTPS
+如果你要改管理员密码，就把 `ADMIN_PASSWORD` 换成你自己的。
 
-```bash
-cd /opt/self-media-review
-DOMAIN=report.example.com docker compose -f compose.production.yml up -d --build
-```
+### 6. 部署
 
-Caddy 会自动申请 HTTPS 证书。浏览器访问 `https://你的域名`。
+点 `Deploy` 开始部署。
 
-### 5. 更新
+### 7. 打开网址
 
-上传新版文件后执行：
+部署完成后，Railway 会给你一个可访问网址。先打开首页，再用下面账号登录：
 
-```bash
-git pull
-DOMAIN=report.example.com docker compose -f compose.production.yml up -d --build
-```
+- 用户名：`admin`
+- 密码：`admin123456`
 
-SQLite 和上传文件保存在服务器目录中，重新构建容器不会丢失。
+如果你已经改了密码，就输入你改过的密码。
+
+### 8. 后续更新
+
+以后代码变更后，重新部署一次即可。SQLite、上传文件、报告和日志都会保留在 `/data`。
 
 ## 六、Cloudflare 部署说明
 
@@ -247,7 +262,17 @@ DOMAIN=report.example.com docker compose -f compose.production.yml config
 
 健康检查地址为 `/health`。服务启动后访问 `https://你的域名/health`，看到 `{"status":"ok"}` 表示后端正常。
 
-## 十、安全提醒
+## 十一、当前功能
+
+- 账号管理：新增、编辑、删除、启用、停用、搜索、平台筛选、批量操作
+- 团队权限：超级管理员和运营人员两种角色
+- 上传记录：Excel / CSV 上传、历史记录、删除、重新上传、筛选
+- 周报 / 月报：生成、编辑、保存历史、PDF 导出
+- 选题中心：手动新增、编辑、删除、收藏、状态管理
+- 登录系统：会话登录、退出登录、持久化登录状态
+- 操作日志：记录新增、编辑、删除、启用、停用、上传、导出
+
+## 十二、安全提醒
 
 - `.env` 已被 `.gitignore` 排除，绝不要截图或粘贴其中的密钥。
 - `.dockerignore` 也会阻止本地密钥、数据库、上传文件和报告进入 Docker 镜像。
