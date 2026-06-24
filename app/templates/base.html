@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
-  <link rel="icon" href="{{ url_for('static', path='/favicon.svg') }}" type="image/svg+xml">
-  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='/design-system.css') }}">
-  <script defer src="{{ url_for('static', path='/app.js') }}"></script>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/design-system.css">
+  <script defer src="/static/app.js"></script>
 </head>
 <body data-theme="{{ appearance.theme if appearance is defined else 'light' }}" data-font-scale="{{ appearance.font_scale if appearance is defined else '100' }}" data-static-site="{{ 'true' if static_site is defined and static_site else 'false' }}">
   <div class="app-shell">
