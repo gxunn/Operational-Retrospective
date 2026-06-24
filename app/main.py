@@ -64,8 +64,12 @@ from .services.scheduler import reload_scheduler, start_scheduler, stop_schedule
 
 
 def initialize() -> None:
-    Base.metadata.create_all(engine)
     with engine.begin() as conn:
+        tables = set(inspect(conn).get_table_names())
+
+        for table in Base.metadata.sorted_tables:
+            if table.name not in tables:
+                table.create(conn, checkfirst=True)
         tables = set(inspect(conn).get_table_names())
 
         def add_column(table: str, name: str, ddl: str) -> None:
