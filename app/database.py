@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import BASE_DIR, settings
@@ -35,6 +35,17 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 class Base(DeclarativeBase):
     pass
+
+
+def _safe_create_all(bind, **kwargs):
+    with bind.begin() as conn:
+        existing = set(inspect(conn).get_table_names())
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing:
+                table.create(conn, checkfirst=True)
+
+
+Base.metadata.create_all = _safe_create_all
 
 
 def get_db():
