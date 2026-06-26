@@ -4,7 +4,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -235,6 +235,8 @@ def is_valid_http_url(value: str) -> bool:
     if not value:
         return True
     try:
+        if "://" not in value and "." in value:
+            value = f"https://{value}"
         parsed = urlparse(value)
     except Exception:
         return False
@@ -1453,7 +1455,7 @@ def _topic_status_options() -> list[str]:
 
 @app.get("/ai-review", response_class=HTMLResponse)
 def ai_review_page(request: Request, range_type: str = "7d", platform: str = "", account_id: int = 0):
-    return redirect("/report-builder", "AI分析已合并到生成报告")
+    return redirect("/report-builder", "AI分析已合并到周报月报")
 
 
 @app.post("/ai-review/generate")
@@ -1467,7 +1469,7 @@ def generate_ai_review(
     csrf: str = Form(),
 ):
     verify_csrf(request, csrf)
-    return redirect("/report-builder", "AI分析已合并到生成报告")
+    return redirect("/report-builder", "AI分析已合并到周报月报")
 
 
 @app.get("/report-builder", response_class=HTMLResponse)
@@ -1515,12 +1517,6 @@ def generate_report_builder(
             "",
             "## 本周/本月运营概况" if report_kind in {"weekly", "monthly"} else "## 项目/活动概况",
             result["markdown"],
-            "",
-            "## PPT 大纲",
-            "1. 数据概览",
-            "2. 核心变化",
-            "3. 问题与风险",
-            "4. 下阶段计划",
         ]
         draft = GeneratedReportDraft(
             report_kind=report_kind,
@@ -1531,7 +1527,7 @@ def generate_report_builder(
             account_id=account_id or None,
             markdown_content="\n".join(sections),
             text_content=result["copy_text"],
-            ppt_outline="1. 数据概览\n2. 核心变化\n3. 问题与风险\n4. 下阶段计划",
+            ppt_outline="",
         )
         db.add(draft)
         ai_review = AiReview(
@@ -1830,17 +1826,69 @@ def generate_breakdown(
         def clean_text(value: str) -> str:
             return "".join(ch for ch in str(value).replace("\x00", "") if ch == "\n" or ch == "\t" or ord(ch) >= 32).strip()
 
+        def clean_markdown_lines(lines: list[str]) -> list[str]:
+            cleaned: list[str] = []
+            for line in lines:
+                text = clean_text(line)
+                if not text:
+                    continue
+                text = text.lstrip("•*·-").strip()
+                cleaned.append(text)
+            return cleaned
+
         source_url = clean_text(source_url)
+        if source_url and "://" not in source_url and "." in source_url:
+            source_url = f"https://{source_url}"
         title = clean_text(title)
         platform = clean_text(platform)
         duration = clean_text(duration)
         cover_description = clean_text(cover_description)
         script_content = clean_text(script_content)
         if not is_valid_http_url(source_url):
-            return redirect("/breakdown", "视频链接格式不正确")
+            return redirect("/breakdown", "视频链接格式不正确，请填写常见平台的 http 或 https 链接")
         if not all(is_non_negative(value) for value in (views, likes, comments)):
             return redirect("/breakdown", "播放量、点赞和评论不能为负数")
         ratio = ((likes + comments) / views * 100) if views else 0
+        markdown_lines = [
+            f"# {title or '爆款拆解'}",
+            "",
+            "## 标题结构",
+            *[f"- {item}" for item in clean_markdown_lines([
+                "当前标题：%s" % (title or "未填写"),
+                "核心词靠前，利益点前置。",
+            ])],
+            "",
+            "## 前3秒钩子",
+            *[f"- {item}" for item in clean_markdown_lines([
+                "先抛结果，再给原因。",
+                "画面与口播同时给到强信息。",
+            ])],
+            "",
+            "## 情绪节奏",
+            *[f"- {item}" for item in clean_markdown_lines([
+                "开头提速，中段解释，结尾收束。",
+            ])],
+            "",
+            "## 卖点表达",
+            *[f"- {item}" for item in clean_markdown_lines([
+                f"当前互动率约 {ratio:.2f}%。",
+            ])],
+            "",
+            "## 转化设计",
+            *[f"- {item}" for item in clean_markdown_lines([
+                "在评论区和私信入口给明确动作。",
+            ])],
+            "",
+            "## 可复用模板",
+            *[f"- {item}" for item in clean_markdown_lines([
+                "痛点 + 场景 + 结果 + 行动指令",
+            ])],
+            "",
+            "## 可延伸选题",
+            *[f"- {item}" for item in clean_markdown_lines([
+                "同主题换人群、换场景、换结果。",
+            ])],
+        ]
         analysis = {
             "title_structure": [
                 "核心词前置，利益点第一句出现。",
@@ -1868,35 +1916,9 @@ def generate_breakdown(
                 "同场景换结果",
                 "同结果换表达方式",
             ],
+            "ratio": ratio,
+            "markdown": "\n".join(markdown_lines),
         }
-        markdown = "\n".join(
-            [
-                f"# {title or '爆款拆解'}",
-                "",
-                "## 标题结构",
-                f"- 当前标题：{title or '未填写'}",
-                "- 核心词靠前，利益点前置。",
-                "",
-                "## 前3秒钩子",
-                "- 先抛结果，再给原因。",
-                "- 画面与口播同时给到强信息。",
-                "",
-                "## 情绪节奏",
-                "- 开头提速，中段解释，结尾收束。",
-                "",
-                "## 卖点表达",
-                f"- 当前互动率约 {ratio:.2f}%。",
-                "",
-                "## 转化设计",
-                "- 在评论区和私信入口给明确动作。",
-                "",
-                "## 可复用模板",
-                "- 痛点 + 场景 + 结果 + 行动指令",
-                "",
-                "## 可延伸选题",
-                "- 同主题换人群、换场景、换结果。",
-            ]
-        )
         case = VideoBreakdown(
             source_url=source_url.strip(),
             title=title.strip(),
@@ -1907,12 +1929,13 @@ def generate_breakdown(
             duration=duration.strip(),
             cover_description=cover_description.strip(),
             script_content=script_content.strip(),
-            analysis_json=json.dumps({**analysis, "markdown": markdown, "ratio": ratio}, ensure_ascii=False),
+            analysis_json=json.dumps(analysis, ensure_ascii=False),
         )
         db.add(case)
         db.commit()
         cases = db.scalars(select(VideoBreakdown).order_by(VideoBreakdown.created_at.desc()).limit(50)).all()
         report_data = safe_json_loads(case.analysis_json, {})
+        report_data["markdown_html"] = md.markdown(report_data.get("markdown", ""), extensions=["tables", "fenced_code"])
         recent_cases = cases[:5]
         hot_rankings = sorted(cases, key=lambda item: item.views or 0, reverse=True)[:5]
         return page(

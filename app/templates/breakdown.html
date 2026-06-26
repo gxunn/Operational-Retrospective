@@ -47,7 +47,7 @@
     <form method="post" action="/breakdown/generate" class="breakdown-form">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <label>视频链接
-        <input name="source_url" placeholder="https://" required pattern="https?://.+" title="请输入以 http:// 或 https:// 开头的链接">
+        <input name="source_url" placeholder="https://" required>
       </label>
       <label>标题
         <input name="title" placeholder="视频标题" required>
@@ -217,20 +217,9 @@
       <small>互动率参考值</small>
     </div>
   </div>
-  <h2>标题结构</h2>
-  <div class="report-copy"><ul class="rich-list">{% for line in report_data.title_structure %}<li>{{ line }}</li>{% endfor %}</ul></div>
-  <h2>前3秒钩子</h2>
-  <div class="report-copy"><ul class="rich-list">{% for line in report_data.hook %}<li>{{ line }}</li>{% endfor %}</ul></div>
-  <h2>情绪节奏</h2>
-  <div class="report-copy"><ul class="rich-list">{% for line in report_data.rhythm %}<li>{{ line }}</li>{% endfor %}</ul></div>
-  <h2>卖点表达</h2>
-  <div class="report-copy"><ul class="rich-list">{% for line in report_data.selling_point %}<li>{{ line }}</li>{% endfor %}</ul></div>
-  <h2>转化设计</h2>
-  <div class="report-copy"><ul class="rich-list">{% for line in report_data.conversion %}<li>{{ line }}</li>{% endfor %}</ul></div>
-  <h2>可复用模板</h2>
-  <div class="report-copy">{{ report_data.template }}</div>
-  <h2>可延伸选题</h2>
-  <div class="report-copy"><ul class="rich-list">{% for line in report_data.extension_topics %}<li>{{ line }}</li>{% endfor %}</ul></div>
+  <div class="markdown-body">
+    {{ report_data.markdown_html | safe }}
+  </div>
   {% else %}
   <h2>完整分析</h2>
   <div class="report-copy">{{ report.analysis_json }}</div>

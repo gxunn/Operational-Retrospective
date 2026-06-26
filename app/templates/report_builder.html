@@ -3,14 +3,14 @@
 {% block content %}
 <section class="page-heading">
   <div>
-    <h1>生成报告</h1>
+    <h1>周报月报</h1>
     <p>支持周报、月报、项目复盘和活动复盘，并统一管理生成历史。</p>
   </div>
 </section>
 
 <div class="two-column">
   <section class="panel form-panel">
-    <h2>生成报表</h2>
+    <h2>周报月报</h2>
     <form method="post" action="/report-builder/generate" class="stack-form">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <label>报表类型
@@ -58,7 +58,7 @@
   </section>
 
   <section class="panel">
-    <div class="panel-head"><div><h2>最近生成</h2><p>Markdown / 文本 / PPT 大纲</p></div></div>
+    <div class="panel-head"><div><h2>最近生成</h2><p>Markdown / 文本</p></div></div>
     <div class="simple-list">
       {% for item in drafts %}
       <div class="simple-row">
@@ -97,8 +97,6 @@
   <pre class="report-pre">{{ draft.markdown_content }}</pre>
   <h2>可复制文本版</h2>
   <pre class="report-pre">{{ draft.text_content }}</pre>
-  <h2>PPT 大纲版</h2>
-  <pre class="report-pre">{{ draft.ppt_outline }}</pre>
 </section>
 {% endif %}
 {% endblock %}
