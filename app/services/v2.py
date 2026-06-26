@@ -56,6 +56,8 @@ def generateAIReport(db: Session, data: dict[str, Any], promptType: str) -> dict
     )
     platform = str(data.get("platform", "")).strip()
     account_id = int(data.get("account_id") or 0) or None
+    include_charts = str(data.get("include_charts", "on")).lower() in {"1", "true", "yes", "on"}
+    include_topic_suggestions = str(data.get("include_topic_suggestions", "on")).lower() in {"1", "true", "yes", "on"}
     metrics = _metric_rows(db, start_date, end_date, platform, account_id)
     contents = _content_rows(db, start_date, end_date, platform, account_id)
     total_views = sum(row.views for row in metrics)
@@ -83,7 +85,7 @@ def generateAIReport(db: Session, data: dict[str, Any], promptType: str) -> dict
         "",
         "## 四、账号增长判断",
         f"- 当前趋势：{('上升' if total_followers >= 0 else '下降')}，需要继续盯紧互动率和转化备注。",
-        "- 当前趋势基于历史数据与内容互动率做 mock 推断。",
+        "- 当前趋势基于历史数据与内容互动率做基础推断。",
         "",
         "## 五、下周优化建议",
         "- 复制高播放选题结构。",
@@ -95,6 +97,20 @@ def generateAIReport(db: Session, data: dict[str, Any], promptType: str) -> dict
         "- 拆解一条低效内容。",
         "- 输出 5 个同题材延展选题。",
     ]
+    if include_charts:
+        notes += [
+            "",
+            "## 七、图表建议",
+            "- 在报告中补一张播放趋势图。",
+            "- 增加账号维度对比图，方便老板快速看差异。",
+        ]
+    if include_topic_suggestions:
+        notes += [
+            "",
+            "## 八、选题建议",
+            "- 把爆款标题结构复用到下一批内容。",
+            "- 继续围绕高播放平台和高互动内容做延展。",
+        ]
     copy_text = "\n".join([
         f"{promptType}复盘结论：",
         f"时间范围 {start_date} 至 {end_date}，总播放/阅读 {total_views:,.0f}，新增粉丝 {total_followers:,.0f}。",
@@ -109,6 +125,10 @@ def generateAIReport(db: Session, data: dict[str, Any], promptType: str) -> dict
             "worst_content": worst.title if worst else "",
         },
         "reasoning": "mock 分析逻辑，后续可替换为真实 AI。",
+        "template_options": {
+            "include_charts": include_charts,
+            "include_topic_suggestions": include_topic_suggestions,
+        },
     }
     return {
         "markdown": "\n".join(notes),

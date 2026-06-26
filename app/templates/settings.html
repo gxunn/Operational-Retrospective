@@ -2,6 +2,21 @@
 {% block content %}
 <section class="page-heading"><div><h1>系统设置</h1><p>支持在前端维护 API Key、SMTP、时区、定时任务和外观偏好。</p></div></section>
 <div class="settings-grid">
+  {% if permissions.manage_settings %}
+  <section class="panel recipient-panel" id="api-settings">
+    <div class="panel-head"><div><h2>API 设置</h2><p>密钥会加密存储，支持更新和删除。</p></div></div>
+    <form method="post" action="/settings/api" class="stack-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>当前状态<input value="{{ api_key_preview }}" readonly></label>
+      <label>OpenAI API Key<input name="openai_api_key" type="password" placeholder="留空则保留当前密钥"></label>
+      <label>OpenAI 模型<input name="openai_model" value="{{ settings.openai_model }}"></label>
+      <div class="action-row">
+        <button class="button primary">保存 API 设置</button>
+        <button class="button secondary" type="submit" formaction="/settings/api/delete" formmethod="post" data-confirm="确认删除 OpenAI API 密钥吗？">删除密钥</button>
+      </div>
+    </form>
+  </section>
+  {% endif %}
   <section class="panel">
     <h2>服务状态</h2>
     <div class="config-list">
@@ -26,8 +41,6 @@
     <div class="panel-head"><div><h2>运行参数</h2><p>敏感信息加密存储，未重新填写的密码类字段会保留原值。</p></div></div>
     <form method="post" action="/settings/general" class="stack-form">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <label>OpenAI API Key<input name="openai_api_key" type="password" placeholder="留空则不修改"></label>
-      <label>OpenAI 模型<input name="openai_model" value="{{ settings.openai_model }}"></label>
       <label>SMTP Host<input name="smtp_host" value="{{ settings.smtp_host }}"></label>
       <label>SMTP Port<input name="smtp_port" value="{{ settings.smtp_port }}"></label>
       <label>SMTP Username<input name="smtp_username" value="{{ settings.smtp_username }}"></label>

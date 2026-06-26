@@ -108,6 +108,13 @@ const assistantForm = document.querySelector('[data-assistant-form]');
 const assistantLog = document.querySelector('[data-assistant-log]');
 const openaiConfigured = document.body?.dataset.openaiConfigured === 'true';
 
+document.querySelectorAll('[data-ai-required]').forEach((element) => {
+  if (openaiConfigured) return;
+  if ('disabled' in element) element.disabled = true;
+  element.setAttribute('aria-disabled', 'true');
+  if (!element.title) element.title = '未配置API密钥';
+});
+
 function appendAssistantMessage(role, text) {
   if (!assistantLog) return;
   const item = document.createElement('div');

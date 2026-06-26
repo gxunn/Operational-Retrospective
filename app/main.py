@@ -43,7 +43,7 @@ from .services.importer import FIELDS, file_sha256, import_batch, preview
 from .services.insights import detect_anomalies, explain_forecast, forecast_trend
 from .services.hotspots import generate_hotspots, report_payload
 from .services.metrics import comparison_groups, summarize_metrics
-from .services.reporting import LABELS, METRICS, generate_report, generate_summary_report, report_stats
+from .services.reporting import LABELS, METRICS, generate_report, generate_summary_report, report_stats, render_docx
 from .services.runtime import (
     PERMISSIONS,
     ROLE_MANAGER,
@@ -228,6 +228,17 @@ def safe_json_loads(value: str, default):
         return json.loads(value)
     except Exception:
         return default
+
+
+def is_valid_http_url(value: str) -> bool:
+    value = value.strip()
+    if not value:
+        return True
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def suggest_material_tags(*parts: str) -> list[str]:
@@ -1107,10 +1118,21 @@ def reports_page(request: Request):
 
 
 @app.get("/hotspots", response_class=HTMLResponse)
-def hotspots_page(request: Request):
+def hotspots_page(request: Request, report_date: str = ""):
     with SessionLocal() as db:
-        report = db.scalar(select(HotspotReport).order_by(HotspotReport.report_date.desc()))
-        return page(request, "hotspots.html", db, report=report, payload=report_payload(report))
+        selected_date = None
+        if report_date:
+            try:
+                selected_date = date.fromisoformat(report_date)
+            except ValueError:
+                selected_date = None
+        history = db.scalars(select(HotspotReport).order_by(HotspotReport.report_date.desc()).limit(14)).all()
+        report = None
+        if selected_date:
+            report = db.scalar(select(HotspotReport).where(HotspotReport.report_date == selected_date))
+        if not report:
+            report = history[0] if history else None
+        return page(request, "hotspots.html", db, report=report, payload=report_payload(report), hotspot_history=history, selected_hotspot_date=selected_date or (report.report_date if report else None))
 
 
 @app.post("/hotspots/refresh")
@@ -1220,6 +1242,24 @@ def download_pdf(report_id: int, request: Request):
         log_operation(db, current_user(request, db), "导出", "报告", report.title, "导出 PDF")
         db.commit()
         return FileResponse(report.pdf_path, filename=f"daily-{report.report_date}.pdf", media_type="application/pdf")
+
+
+@app.get("/reports/{report_id}/docx")
+def download_docx(report_id: int, request: Request):
+    with SessionLocal() as db:
+        if not current_user(request, db):
+            return redirect("/auth/login")
+        report = db.get(Report, report_id)
+        if not report:
+            return redirect("/reports", "报告不存在")
+        path = render_docx(report)
+        log_operation(db, current_user(request, db), "导出", "报告", report.title, "导出 Word")
+        db.commit()
+        return FileResponse(
+            path,
+            filename=f"daily-{report.report_date}.docx",
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
 
 
 @app.post("/reports/{report_id}/email")
@@ -1341,6 +1381,24 @@ def summary_report_pdf(report_id: int, request: Request):
         return FileResponse(report.pdf_path, filename=f"summary-{report.end_date}.pdf", media_type="application/pdf")
 
 
+@app.get("/summary-reports/{report_id}/docx")
+def summary_report_docx(report_id: int, request: Request):
+    with SessionLocal() as db:
+        if not current_user(request, db):
+            return redirect("/auth/login")
+        report = db.get(SummaryReport, report_id)
+        if not report:
+            return redirect("/reports", "报告不存在")
+        path = render_docx(report)
+        log_operation(db, current_user(request, db), "导出", "周月报", report.title, "导出 Word")
+        db.commit()
+        return FileResponse(
+            path,
+            filename=f"summary-{report.end_date}.docx",
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+
 @app.get("/summary-reports/{report_id}/markdown")
 def summary_report_markdown(report_id: int, request: Request):
     with SessionLocal() as db:
@@ -1430,6 +1488,8 @@ def generate_report_builder(
     end_date: str = Form(""),
     platform: str = Form(""),
     account_id: int = Form(0),
+    include_charts: str = Form(""),
+    include_topic_suggestions: str = Form(""),
     csrf: str = Form(),
 ):
     verify_csrf(request, csrf)
@@ -1444,6 +1504,8 @@ def generate_report_builder(
                 "end_date": end_date,
                 "platform": platform,
                 "account_id": account_id,
+                "include_charts": include_charts,
+                "include_topic_suggestions": include_topic_suggestions,
             },
             report_kind,
         )
@@ -1681,7 +1743,7 @@ def generate_topic_center(
 
 
 @app.get("/breakdown", response_class=HTMLResponse)
-def breakdown_page(request: Request, q: str = "", platform: str = ""):
+def breakdown_page(request: Request, q: str = "", platform: str = "", sort_by: str = "created_at", order: str = "desc", page_no: int = 1):
     with SessionLocal() as db:
         query = select(VideoBreakdown)
         if q:
@@ -1689,16 +1751,31 @@ def breakdown_page(request: Request, q: str = "", platform: str = ""):
             query = query.where(or_(VideoBreakdown.title.contains(needle), VideoBreakdown.platform.contains(needle), VideoBreakdown.cover_description.contains(needle)))
         if platform:
             query = query.where(VideoBreakdown.platform == platform)
-        cases = db.scalars(query.order_by(VideoBreakdown.created_at.desc()).limit(50)).all()
-        total_cases = len(cases)
-        avg_views = sum(case.views for case in cases) / total_cases if total_cases else 0
+        sort_map = {
+            "views": VideoBreakdown.views,
+            "likes": VideoBreakdown.likes,
+            "comments": VideoBreakdown.comments,
+            "created_at": VideoBreakdown.created_at,
+        }
+        sort_column = sort_map.get(sort_by, VideoBreakdown.created_at)
+        sort_order = sort_column.asc() if order == "asc" else sort_column.desc()
+        all_cases = db.scalars(query.order_by(sort_order)).all()
+        total_cases = len(all_cases)
+        per_page = 8
+        page_no = max(1, page_no)
+        total_pages = max(1, (total_cases + per_page - 1) // per_page)
+        page_no = min(page_no, total_pages)
+        start = (page_no - 1) * per_page
+        end = start + per_page
+        cases = all_cases[start:end]
+        avg_views = sum(case.views for case in all_cases) / total_cases if total_cases else 0
         progress = min(100, 18 + total_cases * 8)
         analysis_status = "已完成" if total_cases else "等待首条拆解"
         eta = "预计 8 分钟" if total_cases else "预计 1 分钟"
         recent_cases = cases[:5]
-        hot_rankings = sorted(cases, key=lambda item: item.views or 0, reverse=True)[:5]
+        hot_rankings = sorted(all_cases, key=lambda item: item.views or 0, reverse=True)[:5]
         selected_platform = platform if platform in {"抖音", "小红书", "视频号", "公众号", "其他"} else ""
-        report = cases[0] if cases else None
+        report = all_cases[0] if all_cases else None
         return page(
             request,
             "breakdown.html",
@@ -1710,6 +1787,11 @@ def breakdown_page(request: Request, q: str = "", platform: str = ""):
             report_data=safe_json_loads(report.analysis_json, {}) if report else {},
             q=q,
             selected_platform=selected_platform,
+            sort_by=sort_by if sort_by in sort_map else "created_at",
+            sort_order="asc" if order == "asc" else "desc",
+            page_no=page_no,
+            total_pages=total_pages,
+            total_cases=total_cases,
             breakdown_stats={
                 "total_cases": total_cases,
                 "avg_views": avg_views,
@@ -1738,6 +1820,13 @@ def generate_breakdown(
     with SessionLocal() as db:
         if not can(current_actor(request, db), "use_breakdown"):
             return redirect("/breakdown", "没有权限")
+
+        def is_non_negative(value: float) -> bool:
+            try:
+                return float(value) >= 0
+            except Exception:
+                return False
+
         def clean_text(value: str) -> str:
             return "".join(ch for ch in str(value).replace("\x00", "") if ch == "\n" or ch == "\t" or ord(ch) >= 32).strip()
 
@@ -1747,6 +1836,10 @@ def generate_breakdown(
         duration = clean_text(duration)
         cover_description = clean_text(cover_description)
         script_content = clean_text(script_content)
+        if not is_valid_http_url(source_url):
+            return redirect("/breakdown", "视频链接格式不正确")
+        if not all(is_non_negative(value) for value in (views, likes, comments)):
+            return redirect("/breakdown", "播放量、点赞和评论不能为负数")
         ratio = ((likes + comments) / views * 100) if views else 0
         analysis = {
             "title_structure": [
@@ -2143,6 +2236,7 @@ def settings_page(request: Request):
         recipients = db.scalars(select(EmailRecipient).order_by(EmailRecipient.created_at)).all()
         runtime = runtime_settings(db)
         hotspot_history = db.scalars(select(HotspotReport).order_by(HotspotReport.report_date.desc()).limit(10)).all()
+        api_tail = runtime.openai_api_key[-4:] if runtime.openai_api_key else ""
         config_status = {
             "openai": bool(runtime.openai_api_key),
             "smtp": bool(runtime.smtp_host and runtime.smtp_username and runtime.smtp_password),
@@ -2174,6 +2268,7 @@ def settings_page(request: Request):
             recipients=recipients_view,
             config_status=config_status,
             settings=runtime,
+            api_key_preview=("已配置" + (f"（尾号 {api_tail}）" if api_tail else "")) if runtime.openai_api_key else "未配置",
             appearance=appearance,
             business_keywords=", ".join(business_keywords),
             hotspot_sources=", ".join(hotspot_sources),
@@ -2182,11 +2277,42 @@ def settings_page(request: Request):
         )
 
 
-@app.post("/settings/general")
-def save_general_settings(
+@app.post("/settings/api")
+def save_api_settings(
     request: Request,
     openai_api_key: str = Form(""),
     openai_model: str = Form(""),
+    csrf: str = Form(),
+):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = require_permission(request, db, "manage_settings")
+        if not actor:
+            return redirect("/settings", "没有权限")
+        if openai_api_key.strip():
+            set_setting(db, "openai_api_key", openai_api_key.strip(), secret=True)
+        set_setting(db, "openai_model", openai_model.strip() or settings.openai_model)
+        log_operation(db, actor, "编辑", "API设置", "OpenAI API", "更新密钥或模型")
+        db.commit()
+    return redirect("/settings", "API 设置已保存")
+
+
+@app.post("/settings/api/delete")
+def delete_api_settings(request: Request, csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = require_permission(request, db, "manage_settings")
+        if not actor:
+            return redirect("/settings", "没有权限")
+        set_setting(db, "openai_api_key", "")
+        log_operation(db, actor, "删除", "API设置", "OpenAI API", "删除 API 密钥")
+        db.commit()
+    return redirect("/settings", "API 密钥已删除")
+
+
+@app.post("/settings/general")
+def save_general_settings(
+    request: Request,
     smtp_host: str = Form(""),
     smtp_port: str = Form("465"),
     smtp_username: str = Form(""),
@@ -2209,11 +2335,9 @@ def save_general_settings(
 ):
     verify_csrf(request, csrf)
     with SessionLocal() as db:
-        if not require_permission(request, db, "manage_settings"):
+        actor = require_permission(request, db, "manage_settings")
+        if not actor:
             return redirect("/settings", "没有权限")
-        if openai_api_key.strip():
-            set_setting(db, "openai_api_key", openai_api_key.strip(), secret=True)
-        set_setting(db, "openai_model", openai_model.strip() or settings.openai_model)
         set_setting(db, "smtp_host", smtp_host.strip())
         set_setting(db, "smtp_port", smtp_port.strip() or "465")
         set_setting(db, "smtp_username", smtp_username.strip())
@@ -2314,6 +2438,12 @@ def bulk_delete_recipients(request: Request, recipient_ids: str = Form(""), csrf
             db.delete(recipient)
         db.commit()
     return redirect("/settings", "已批量删除收件人")
+
+
+@app.get("/help", response_class=HTMLResponse)
+def help_page(request: Request):
+    with SessionLocal() as db:
+        return page(request, "help.html", db)
 
 
 @app.get("/logs", response_class=HTMLResponse)

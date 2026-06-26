@@ -1,8 +1,10 @@
 import json
 import re
+import zipfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import markdown as md
 from openai import OpenAI
@@ -197,7 +199,8 @@ def render_pdf(report: Report | SummaryReport) -> str:
     output_dir = settings.storage_dir / "reports"
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = getattr(report, "report_date", None) or getattr(report, "end_date", None)
-    target = output_dir / f"report-{stamp.isoformat()}.pdf"
+    prefix = getattr(report, "report_type", None) or getattr(report, "period_type", None) or "report"
+    target = output_dir / f"{prefix}-{stamp.isoformat()}.pdf"
 
     def fallback_pdf() -> str:
         try:
@@ -231,6 +234,65 @@ def render_pdf(report: Report | SummaryReport) -> str:
         return str(target)
     except Exception:
         return fallback_pdf()
+
+
+def render_docx(report: Report | SummaryReport) -> str:
+    from ..config import settings
+
+    output_dir = settings.storage_dir / "reports"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = getattr(report, "report_date", None) or getattr(report, "end_date", None)
+    prefix = getattr(report, "report_type", None) or getattr(report, "period_type", None) or "report"
+    target = output_dir / f"{prefix}-{stamp.isoformat()}.docx"
+    markdown_content = getattr(report, "markdown_content", "") or ""
+
+    def paragraph(text: str) -> str:
+        return (
+            "<w:p>"
+            "<w:r><w:t xml:space='preserve'>"
+            f"{escape(text)}"
+            "</w:t></w:r>"
+            "</w:p>"
+        )
+
+    title = (getattr(report, "title", "") or "复盘报告").replace("\n", " ")
+    lines = [line.strip() for line in markdown_content.splitlines() if line.strip()]
+    body = [paragraph(title)]
+    for line in lines:
+        plain = re.sub(r"^[#>\-\*\d\.\s]+", "", line).strip()
+        if not plain:
+            continue
+        body.append(paragraph(plain))
+    if len(body) == 1:
+        body.append(paragraph("暂无正文内容"))
+
+    document_xml = (
+        "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>"
+        "<w:document xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main'>"
+        "<w:body>"
+        + "".join(body)
+        + "<w:sectPr><w:pgSz w:w='11906' w:h='16838'/><w:pgMar w:top='1440' w:right='1440' w:bottom='1440' w:left='1440'/></w:sectPr>"
+        + "</w:body></w:document>"
+    )
+    content_types = """<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
+<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'>
+  <Default Extension='rels' ContentType='application/vnd.openxmlformats-package.relationships+xml'/>
+  <Default Extension='xml' ContentType='application/xml'/>
+  <Override PartName='/word/document.xml' ContentType='application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'/>
+</Types>"""
+    rels = """<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
+<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'>
+  <Relationship Id='rId1' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument' Target='word/document.xml'/>
+</Relationships>"""
+    doc_rels = """<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
+<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'/>"""
+
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", rels)
+        archive.writestr("word/document.xml", document_xml)
+        archive.writestr("word/_rels/document.xml.rels", doc_rels)
+    return str(target)
 
 
 def generate_report(db: Session, target: date | None = None, use_latest: bool = True) -> Report:

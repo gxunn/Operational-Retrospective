@@ -47,10 +47,10 @@
     <form method="post" action="/breakdown/generate" class="breakdown-form">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <label>视频链接
-        <input name="source_url" placeholder="https://">
+        <input name="source_url" placeholder="https://" required pattern="https?://.+" title="请输入以 http:// 或 https:// 开头的链接">
       </label>
       <label>标题
-        <input name="title" placeholder="视频标题">
+        <input name="title" placeholder="视频标题" required>
       </label>
       <label>平台
         <select name="platform">
@@ -62,9 +62,9 @@
         </select>
       </label>
       <div class="field-grid">
-        <label>播放量<input name="views" type="number" step="1" value="0"></label>
-        <label>点赞<input name="likes" type="number" step="1" value="0"></label>
-        <label>评论<input name="comments" type="number" step="1" value="0"></label>
+        <label>播放量<input name="views" type="number" step="1" min="0" value="0"></label>
+        <label>点赞<input name="likes" type="number" step="1" min="0" value="0"></label>
+        <label>评论<input name="comments" type="number" step="1" min="0" value="0"></label>
       </div>
       <label>视频时长
         <input name="duration" placeholder="15s / 3min">
@@ -124,6 +124,16 @@
           <option value="{{ item }}" {% if selected_platform == item %}selected{% endif %}>{{ item }}</option>
           {% endfor %}
         </select>
+        <select name="sort_by">
+          <option value="created_at" {% if sort_by == 'created_at' %}selected{% endif %}>按创建时间</option>
+          <option value="views" {% if sort_by == 'views' %}selected{% endif %}>按播放量</option>
+          <option value="likes" {% if sort_by == 'likes' %}selected{% endif %}>按点赞数</option>
+          <option value="comments" {% if sort_by == 'comments' %}selected{% endif %}>按评论数</option>
+        </select>
+        <select name="order">
+          <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>降序</option>
+          <option value="asc" {% if sort_order == 'asc' %}selected{% endif %}>升序</option>
+        </select>
         <button class="button secondary">筛选</button>
       </form>
       <div class="case-list">
@@ -157,6 +167,13 @@
           </div>
         </div>
         {% endfor %}
+      </div>
+      <div class="pagination">
+        <span>共 {{ total_cases }} 条 · 第 {{ page_no }} / {{ total_pages }} 页</span>
+        <div class="pagination-actions">
+          {% if page_no > 1 %}<a class="button secondary" href="/breakdown?q={{ q }}&platform={{ selected_platform }}&sort_by={{ sort_by }}&order={{ sort_order }}&page_no={{ page_no - 1 }}">上一页</a>{% endif %}
+          {% if page_no < total_pages %}<a class="button secondary" href="/breakdown?q={{ q }}&platform={{ selected_platform }}&sort_by={{ sort_by }}&order={{ sort_order }}&page_no={{ page_no + 1 }}">下一页</a>{% endif %}
+        </div>
       </div>
     </section>
   </aside>

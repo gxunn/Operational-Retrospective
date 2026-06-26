@@ -9,6 +9,7 @@
   <div class="heading-actions">
     <a class="button secondary" href="{{ '/summary-reports/' if report.start_date is defined else '/reports/' }}{{ report.id }}/markdown">导出 Markdown</a>
     <a class="button secondary" href="{{ '/summary-reports/' if report.start_date is defined else '/reports/' }}{{ report.id }}/pdf">导出 PDF</a>
+    <a class="button secondary" href="{{ '/summary-reports/' if report.start_date is defined else '/reports/' }}{{ report.id }}/docx">导出 Word</a>
     {% if permissions.send_email and report.start_date is not defined %}
     <form method="post" action="/reports/{{ report.id }}/email">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">

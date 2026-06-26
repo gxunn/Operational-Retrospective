@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}帮助中心 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div>
+    <h1>帮助中心</h1>
+    <p>这里放最常用的使用说明和反馈入口，方便快速找到问题处理方式。</p>
+  </div>
+</section>
+
+<div class="settings-grid">
+  <section class="panel recipient-panel">
+    <div class="panel-head"><div><h2>常用操作</h2><p>先看这几个最常见的使用点。</p></div></div>
+    <div class="help-list">
+      <div><strong>登录</strong><span>使用 admin 账号和你配置的密码登录。</span></div>
+      <div><strong>API 设置</strong><span>在系统设置里先保存 OpenAI API Key，再使用 AI 助手和热点能力。</span></div>
+      <div><strong>数据保存</strong><span>账号、选题、拆解、报告和日志都会保存在数据库里，刷新不会丢。</span></div>
+      <div><strong>导出报告</strong><span>在报告详情页可以导出 Markdown、PDF 和 Word。</span></div>
+    </div>
+  </section>
+
+  <section class="panel recipient-panel" id="feedback">
+    <div class="panel-head"><div><h2>意见反馈</h2><p>如果页面有问题，优先把现象和截图发给管理员。</p></div></div>
+    <div class="help-feedback">
+      <p>建议反馈内容包含：页面名称、你的操作、报错提示、截图。</p>
+      <p>如果你是管理员，也可以直接到系统设置里修改 API、SMTP 和定时参数。</p>
+    </div>
+  </section>
+</div>
+{% endblock %}

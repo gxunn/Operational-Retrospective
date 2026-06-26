@@ -34,19 +34,31 @@
         {% endfor %}
       </nav>
       <div class="sidebar-footer">
-        <div class="user-block"><span class="avatar">{{ (user.display_name or user.username)[:1] }}</span><span><strong>{{ user.display_name or user.username }}</strong><small>{{ user_role_label }}</small></span></div>
-        <div class="sidebar-tools"><button class="icon-button collapse-button" type="button" data-collapse title="收起菜单" aria-label="收起菜单"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button><form action="/auth/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" title="退出登录" aria-label="退出登录"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#logout"></use></svg></button></form></div>
+        <div class="sidebar-footer-main">
+          <div class="user-block"><span class="avatar">{{ (user.display_name or user.username)[:1] }}</span><span><strong>{{ user.display_name or user.username }}</strong><small>{{ user_role_label }}</small></span></div>
+          <div class="sidebar-tools"><button class="icon-button collapse-button" type="button" data-collapse title="收起菜单" aria-label="收起菜单"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button><form action="/auth/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="icon-button" title="退出登录" aria-label="退出登录"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#logout"></use></svg></button></form></div>
+        </div>
+        <div class="sidebar-footer-links">
+          <a href="/help">帮助中心</a>
+          <a href="/help#feedback">意见反馈</a>
+        </div>
       </div>
     </aside>
     <div class="main-wrap">
       <header class="mobile-header"><button class="icon-button" type="button" data-menu aria-label="打开菜单"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#menu"></use></svg></button><span>运营效率中台 V2</span></header>
       <main class="main-content">
+        {% if settings is defined and not settings.openai_api_key %}
+        <div class="api-banner" role="status">
+          <strong>OpenAI API 未配置</strong>
+          <span>AI 助手、热点生成会自动使用本地降级内容，去系统设置里补上密钥即可恢复完整能力。</span>
+        </div>
+        {% endif %}
         {% if message %}<div class="toast" role="status">{{ message }}</div>{% endif %}
         {% block content %}{% endblock %}
       </main>
     </div>
   </div>
-  <button class="assistant-fab" type="button" data-assistant-toggle title="{{ '未配置API密钥' if not (settings is defined and settings.openai_api_key) else '' }}">AI 助手</button>
+  <button class="assistant-fab" type="button" data-assistant-toggle data-ai-required title="{{ '未配置API密钥' if not (settings is defined and settings.openai_api_key) else '' }}" {% if settings is defined and not settings.openai_api_key %}disabled{% endif %}>AI 助手</button>
   <section class="assistant-panel" data-assistant-panel hidden>
     <div class="assistant-head">
       <strong>AI 助手</strong>
