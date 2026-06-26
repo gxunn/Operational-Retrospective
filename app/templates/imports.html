@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% block title %}导入记录 · {{ app_name }}{% endblock %}
 {% block content %}
 <section class="page-heading">
-  <div><p class="section-note">数据来源</p><h1>导入记录</h1><p>支持删除单条失败记录、清理失败记录和回滚最近导入。</p></div>
+  <div><h1>导入记录</h1><p>支持删除单条失败记录、清理失败记录和回滚最近导入。</p></div>
   <div class="heading-actions">
     <a class="button primary" href="/imports/upload">上传新数据</a>
     {% if permissions.delete_data %}

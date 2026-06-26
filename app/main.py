@@ -1395,29 +1395,7 @@ def _topic_status_options() -> list[str]:
 
 @app.get("/ai-review", response_class=HTMLResponse)
 def ai_review_page(request: Request, range_type: str = "7d", platform: str = "", account_id: int = 0):
-    with SessionLocal() as db:
-        accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None), PlatformAccount.is_active.is_(True)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
-        reports = db.scalars(select(AiReview).order_by(AiReview.created_at.desc()).limit(8)).all()
-        selected_account = db.get(PlatformAccount, account_id) if account_id else None
-        latest = reports[0] if reports else None
-        generated = None
-        if latest:
-            generated = {
-                "markdown": latest.markdown_content,
-                "copy_text": latest.copy_text,
-                "summary_json": safe_json_loads(latest.summary_json, {}),
-            }
-        return page(
-            request,
-            "ai_review.html",
-            db,
-            accounts=accounts,
-            reports=reports,
-            generated=generated,
-            selected_account=selected_account,
-            selected_platform=platform,
-            selected_range_type=range_type,
-        )
+    return redirect("/report-builder", "AI分析已合并到生成报告")
 
 
 @app.post("/ai-review/generate")
@@ -1431,51 +1409,7 @@ def generate_ai_review(
     csrf: str = Form(),
 ):
     verify_csrf(request, csrf)
-    with SessionLocal() as db:
-        if not can(current_actor(request, db), "use_ai_reports"):
-            return redirect("/ai-review", "没有权限")
-        payload = {
-            "range_type": range_type,
-            "start_date": start_date,
-            "end_date": end_date,
-            "platform": platform,
-            "account_id": account_id,
-        }
-        result = generateAIReport(db, payload, "ai_review")
-        report = AiReview(
-            report_type="ai_review",
-            range_type=range_type,
-            start_date=result["start_date"],
-            end_date=result["end_date"],
-            platform=platform,
-            account_id=account_id or None,
-            prompt_type="review",
-            markdown_content=result["markdown"],
-            summary_json=json.dumps(result["summary_json"], ensure_ascii=False),
-            copy_text=result["copy_text"],
-        )
-        db.add(report)
-        log_operation(db, current_actor(request, db), "生成", "AI复盘", f"{range_type} · {platform or '全部平台'}", "生成 AI 复盘")
-        db.commit()
-        accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None), PlatformAccount.is_active.is_(True)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
-        reports = db.scalars(select(AiReview).order_by(AiReview.created_at.desc()).limit(8)).all()
-        generated = {
-            "markdown": report.markdown_content,
-            "copy_text": report.copy_text,
-            "summary_json": safe_json_loads(report.summary_json, {}),
-        }
-        return page(
-            request,
-            "ai_review.html",
-            db,
-            accounts=accounts,
-            reports=reports,
-            generated=generated,
-            selected_account=db.get(PlatformAccount, account_id) if account_id else None,
-            selected_platform=platform,
-            selected_range_type=range_type,
-            message="AI 复盘已生成",
-        )
+    return redirect("/report-builder", "AI分析已合并到生成报告")
 
 
 @app.get("/report-builder", response_class=HTMLResponse)
@@ -1483,7 +1417,8 @@ def report_builder_page(request: Request):
     with SessionLocal() as db:
         accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None), PlatformAccount.is_active.is_(True)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
         drafts = db.scalars(select(GeneratedReportDraft).order_by(GeneratedReportDraft.created_at.desc()).limit(8)).all()
-        return page(request, "report_builder.html", db, accounts=accounts, drafts=drafts, draft=None)
+        ai_reviews = db.scalars(select(AiReview).order_by(AiReview.created_at.desc()).limit(8)).all()
+        return page(request, "report_builder.html", db, accounts=accounts, drafts=drafts, ai_reviews=ai_reviews, draft=None)
 
 
 @app.post("/report-builder/generate")
@@ -1537,11 +1472,25 @@ def generate_report_builder(
             ppt_outline="1. 数据概览\n2. 核心变化\n3. 问题与风险\n4. 下阶段计划",
         )
         db.add(draft)
+        ai_review = AiReview(
+            report_type="ai_review",
+            range_type=range_type,
+            start_date=result["start_date"],
+            end_date=result["end_date"],
+            platform=platform,
+            account_id=account_id or None,
+            prompt_type=report_kind,
+            markdown_content=result["markdown"],
+            summary_json=json.dumps(result["summary_json"], ensure_ascii=False),
+            copy_text=result["copy_text"],
+        )
+        db.add(ai_review)
         log_operation(db, current_actor(request, db), "生成", "报告草稿", title, "生成周报/月报草稿")
         db.commit()
         accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None), PlatformAccount.is_active.is_(True)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
         drafts = db.scalars(select(GeneratedReportDraft).order_by(GeneratedReportDraft.created_at.desc()).limit(8)).all()
-        return page(request, "report_builder.html", db, accounts=accounts, drafts=drafts, draft=draft, message="周报/月报已生成")
+        ai_reviews = db.scalars(select(AiReview).order_by(AiReview.created_at.desc()).limit(8)).all()
+        return page(request, "report_builder.html", db, accounts=accounts, drafts=drafts, ai_reviews=ai_reviews, draft=draft, message="周报/月报已生成")
 
 
 @app.get("/topic-center", response_class=HTMLResponse)
@@ -1749,6 +1698,7 @@ def breakdown_page(request: Request, q: str = "", platform: str = ""):
         recent_cases = cases[:5]
         hot_rankings = sorted(cases, key=lambda item: item.views or 0, reverse=True)[:5]
         selected_platform = platform if platform in {"抖音", "小红书", "视频号", "公众号", "其他"} else ""
+        report = cases[0] if cases else None
         return page(
             request,
             "breakdown.html",
@@ -1756,7 +1706,8 @@ def breakdown_page(request: Request, q: str = "", platform: str = ""):
             cases=cases,
             recent_cases=recent_cases,
             hot_rankings=hot_rankings,
-            report=None,
+            report=report,
+            report_data=safe_json_loads(report.analysis_json, {}) if report else {},
             q=q,
             selected_platform=selected_platform,
             breakdown_stats={
@@ -1787,6 +1738,15 @@ def generate_breakdown(
     with SessionLocal() as db:
         if not can(current_actor(request, db), "use_breakdown"):
             return redirect("/breakdown", "没有权限")
+        def clean_text(value: str) -> str:
+            return "".join(ch for ch in str(value).replace("\x00", "") if ch == "\n" or ch == "\t" or ord(ch) >= 32).strip()
+
+        source_url = clean_text(source_url)
+        title = clean_text(title)
+        platform = clean_text(platform)
+        duration = clean_text(duration)
+        cover_description = clean_text(cover_description)
+        script_content = clean_text(script_content)
         ratio = ((likes + comments) / views * 100) if views else 0
         analysis = {
             "title_structure": [

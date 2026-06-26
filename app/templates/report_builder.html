@@ -3,9 +3,8 @@
 {% block content %}
 <section class="page-heading">
   <div>
-    <p class="section-note">报表生成器</p>
     <h1>生成报告</h1>
-    <p>支持周报、月报、项目复盘和活动复盘，输出 Markdown、文本版和 PPT 大纲版。</p>
+    <p>支持周报、月报、项目复盘和活动复盘，并统一管理生成历史。</p>
   </div>
 </section>
 
@@ -70,6 +69,22 @@
     </div>
   </section>
 </div>
+
+<section class="panel u-mt-24">
+  <div class="panel-head"><div><h2>AI复盘历史</h2><p>与周报/月报共用同一入口</p></div></div>
+  <div class="simple-list">
+    {% for item in ai_reviews %}
+    <div class="simple-row">
+      <div>
+        <strong>{{ item.start_date }} 至 {{ item.end_date }}</strong>
+        <small>{{ item.platform or '全部平台' }}{% if item.account_id %} · 账号 {{ item.account_id }}{% endif %} · {{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
+      </div>
+    </div>
+    {% else %}
+    <div class="empty-inline">还没有 AI 复盘记录</div>
+    {% endfor %}
+  </div>
+</section>
 
 {% if draft %}
 <section class="panel report-paper u-mt-24">

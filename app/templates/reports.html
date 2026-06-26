@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% block title %}复盘报告 · {{ app_name }}{% endblock %}
 {% block content %}
 <section class="page-heading">
-  <div><p class="section-note">行动建议</p><h1>复盘报告</h1><p>支持生成日报，并维护历史报告名称与删除操作。</p></div>
+  <div><h1>复盘报告</h1><p>支持生成日报，并维护历史报告名称与删除操作。</p></div>
   <div class="heading-actions">
     {% if permissions.manage_reports %}
     <form class="inline-form" method="post" action="/reports/generate">

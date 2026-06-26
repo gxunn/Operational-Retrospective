@@ -3,7 +3,6 @@
 {% block content %}
 <section class="page-heading">
   <div>
-    <p class="section-note">{{ report.end_date if report.start_date is defined else report.report_date }}</p>
     <h1>{{ report.title or '复盘报告' }}</h1>
     <p>{% if report.ai_error %}已生成纯数据版：{{ report.ai_error }}{% else %}数据与 AI 分析已生成{% endif %}</p>
   </div>

@@ -60,8 +60,9 @@ HOTSPOT_SCHEMA = {
                     "format": {"type": "string"},
                     "timeliness": {"type": "string"},
                     "titles": {"type": "array", "items": {"type": "string"}},
+                    "cover_lines": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["priority", "direction", "hotspot", "fusion", "reason", "format", "timeliness", "titles"],
+                "required": ["priority", "direction", "hotspot", "fusion", "reason", "format", "timeliness", "titles", "cover_lines"],
                 "additionalProperties": False,
             },
         },
@@ -81,19 +82,34 @@ def _safe_urls(values: list) -> list[str]:
 
 
 def normalize_payload(payload: dict, response_dump: dict | None = None) -> dict:
+    def clean_text(value: str) -> str:
+        return "".join(ch for ch in str(value) if ch == "\n" or ch == "\t" or ord(ch) >= 32).strip()
+
     clean = {
-        "summary": str(payload.get("summary", "")).strip(),
+        "summary": clean_text(payload.get("summary", "")),
         "realtime": list(payload.get("realtime", []))[:8],
         "weekly": list(payload.get("weekly", []))[:10],
         "topics": list(payload.get("topics", []))[:10],
         "sources": [],
     }
     for item in clean["realtime"] + clean["weekly"]:
+        item["topic"] = clean_text(item.get("topic", ""))
+        item["heat_reason"] = clean_text(item.get("heat_reason", ""))
+        item["usable_angle"] = clean_text(item.get("usable_angle", ""))
+        item["trend"] = clean_text(item.get("trend", ""))
+        item["why_it_matters"] = clean_text(item.get("why_it_matters", ""))
         item["source_urls"] = _safe_urls(item.get("source_urls", []))
         clean["sources"].extend(item["source_urls"])
     for item in clean["topics"]:
         item["priority"] = item.get("priority") if item.get("priority") in {"S", "A", "B"} else "B"
-        item["titles"] = [str(title).strip() for title in item.get("titles", []) if str(title).strip()][:5]
+        item["direction"] = clean_text(item.get("direction", ""))
+        item["hotspot"] = clean_text(item.get("hotspot", ""))
+        item["fusion"] = clean_text(item.get("fusion", ""))
+        item["reason"] = clean_text(item.get("reason", ""))
+        item["format"] = clean_text(item.get("format", ""))
+        item["timeliness"] = clean_text(item.get("timeliness", ""))
+        item["titles"] = [clean_text(title) for title in item.get("titles", []) if clean_text(title)][:5]
+        item["cover_lines"] = [clean_text(line) for line in item.get("cover_lines", []) if clean_text(line)][:5]
 
     def collect(value):
         if isinstance(value, dict):
@@ -153,7 +169,7 @@ def generate_hotspots(db: Session, target: date | None = None) -> HotspotReport:
 - 热点必须基于搜索到的近期信息，不得把陈旧事件写成实时热点；无法确认的平台不要编造热度，也不要仅凭一篇新闻声称它已在某平台爆火。
 - topics 才负责把大众热点与无人机足球自然连接；关联不了就放弃，不要硬蹭。
 - 选题按 S/A/B 优先级排序：S 为 24 小时内应发布，A 为本周可做，B 为可储备。
-- 每个选题给出融合方式、推荐视频形式、时效窗口，以及 3 个可以直接发布使用的中文标题。
+- 每个选题给出融合方式、推荐视频形式、时效窗口，以及 3 到 5 个可以直接发布使用的中文标题和 3 到 5 条可直接用于封面的中文文案。
 - 标题自然、具体、有短视频感，避免夸大、虚假承诺和生硬蹭热点。
 - source_urls 填支持该热点的网页地址；不要包含用户隐私信息。
 """

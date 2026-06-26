@@ -1,7 +1,6 @@
 {% extends "base.html" %}{% block title %}确认字段 · {{ app_name }}{% endblock %}
 {% block content %}
-<section class="page-heading"><div><p class="section-note">第二步</p><h1>确认字段对应关系</h1><p>{{ batch.account.platform }} · {{ batch.account.name }} · {{ batch.original_filename }}</p></div></section>
+<section class="page-heading"><div><h1>确认字段对应关系</h1><p>{{ batch.account.platform }} · {{ batch.account.name }} · {{ batch.original_filename }}</p></div></section>
 <form method="post" action="/imports/{{ batch.id }}/commit"><input type="hidden" name="csrf" value="{{ csrf_token }}"><section class="panel mapping-panel"><div class="panel-head"><div><h2>字段映射</h2><p>数据日期必选，其他字段按表格内容选择。</p></div></div><div class="mapping-grid">{% for field, label in fields.items() %}<label><span>{{ label }}{% if field == 'date' %}<b>*</b>{% endif %}</span><select name="{{ field }}" {% if field == 'date' %}required{% endif %}><option value="">不导入此字段</option>{% for column in columns %}<option value="{{ column }}" {% if suggested.get(field) == column %}selected{% endif %}>{{ column }}</option>{% endfor %}</select></label>{% endfor %}</div></section>
 <section class="panel preview-panel"><div class="panel-head"><div><h2>原始数据预览</h2><p>显示前 {{ rows|length }} 行</p></div></div><div class="table-wrap"><table><thead><tr>{% for column in columns %}<th>{{ column }}</th>{% endfor %}</tr></thead><tbody>{% for row in rows %}<tr>{% for column in columns %}<td>{{ row[column] }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div></section><div class="sticky-actions"><a class="button secondary" href="/imports/upload">重新选择</a><button class="button primary">确认并导入</button></div></form>
 {% endblock %}
-

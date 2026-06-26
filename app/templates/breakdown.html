@@ -201,22 +201,22 @@
     </div>
   </div>
   <h2>标题结构</h2>
-  <div class="report-copy">{% for line in report_data.title_structure %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <div class="report-copy"><ul class="rich-list">{% for line in report_data.title_structure %}<li>{{ line }}</li>{% endfor %}</ul></div>
   <h2>前3秒钩子</h2>
-  <div class="report-copy">{% for line in report_data.hook %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <div class="report-copy"><ul class="rich-list">{% for line in report_data.hook %}<li>{{ line }}</li>{% endfor %}</ul></div>
   <h2>情绪节奏</h2>
-  <div class="report-copy">{% for line in report_data.rhythm %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <div class="report-copy"><ul class="rich-list">{% for line in report_data.rhythm %}<li>{{ line }}</li>{% endfor %}</ul></div>
   <h2>卖点表达</h2>
-  <div class="report-copy">{% for line in report_data.selling_point %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <div class="report-copy"><ul class="rich-list">{% for line in report_data.selling_point %}<li>{{ line }}</li>{% endfor %}</ul></div>
   <h2>转化设计</h2>
-  <div class="report-copy">{% for line in report_data.conversion %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <div class="report-copy"><ul class="rich-list">{% for line in report_data.conversion %}<li>{{ line }}</li>{% endfor %}</ul></div>
   <h2>可复用模板</h2>
   <div class="report-copy">{{ report_data.template }}</div>
   <h2>可延伸选题</h2>
-  <div class="report-copy">{% for line in report_data.extension_topics %}• {{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  <div class="report-copy"><ul class="rich-list">{% for line in report_data.extension_topics %}<li>{{ line }}</li>{% endfor %}</ul></div>
   {% else %}
   <h2>完整分析</h2>
-  <pre class="report-pre">{{ report.analysis_json }}</pre>
+  <div class="report-copy">{{ report.analysis_json }}</div>
   {% endif %}
 </section>
 {% endif %}

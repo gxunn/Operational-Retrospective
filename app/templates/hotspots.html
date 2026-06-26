@@ -2,7 +2,7 @@
 {% block title %}每日热点 · {{ app_name }}{% endblock %}
 {% block content %}
 <section class="page-heading hotspot-heading">
-  <div><p class="section-note">内容雷达</p><h1>每日热点</h1><p>先看平台热度，再筛选能自然融入无人机足球的内容机会。</p></div>
+  <div><h1>每日热点</h1><p>先看平台热度，再筛选能自然融入无人机足球的内容机会。</p></div>
   <div class="heading-actions">
     <span class="schedule-note"><svg viewBox="0 0 24 24"><use href="/static/icons.svg#clock"></use></svg>每天 <strong>{{ '%02d:%02d'|format(settings.hotspot_hour, settings.hotspot_minute) }}</strong> 自动更新</span>
     <form method="post" action="/hotspots/refresh"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="button primary">立即刷新热点</button></form>
@@ -32,11 +32,12 @@
 
 {% if payload.topics %}
 <section class="topic-section"><div class="topic-section-head"><div><p class="section-note">选题初筛</p><h2>无人机足球可融合方向</h2><p>S 级今天做，A 级本周做，B 级进入选题库。</p></div></div>
-  <div class="topic-grid">{% for item in payload.topics %}<article class="panel topic-card priority-{{ item.priority|lower }}">
+    <div class="topic-grid">{% for item in payload.topics %}<article class="panel topic-card priority-{{ item.priority|lower }}">
     <div class="topic-card-head"><span class="priority-badge">{{ item.priority }} 级</span><span>{{ item.timeliness }}</span></div>
     <h3>{{ item.direction }}</h3><p class="topic-hotspot">关联热点：{{ item.hotspot }}</p>
     <div class="topic-details"><div><span>融合方式</span><p>{{ item.fusion }}</p></div><div><span>优先理由</span><p>{{ item.reason }}</p></div><div><span>推荐形式</span><p>{{ item.format }}</p></div></div>
     <div class="ready-titles"><strong>可直接使用的标题</strong>{% for title in item.titles %}<div><span>{{ title }}</span><button type="button" class="copy-title" data-copy="{{ title }}">复制</button></div>{% endfor %}</div>
+    {% if item.cover_lines %}<div class="ready-titles"><strong>封面文案</strong>{% for line in item.cover_lines %}<div><span>{{ line }}</span><button type="button" class="copy-title" data-copy="{{ line }}">复制</button></div>{% endfor %}</div>{% endif %}
   </article>{% endfor %}</div>
 </section>
 {% endif %}

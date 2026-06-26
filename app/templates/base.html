@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="/static/design-system.css">
   <script defer src="/static/app.js"></script>
 </head>
-<body data-theme="{{ appearance.theme if appearance is defined else 'light' }}" data-font-scale="{{ appearance.font_scale if appearance is defined else '100' }}" data-static-site="{{ 'true' if static_site is defined and static_site else 'false' }}">
+<body data-theme="{{ appearance.theme if appearance is defined else 'light' }}" data-font-scale="{{ appearance.font_scale if appearance is defined else '100' }}" data-static-site="{{ 'true' if static_site is defined and static_site else 'false' }}" data-openai-configured="{{ 'true' if settings is defined and settings.openai_api_key else 'false' }}">
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="/"><span class="brand-rule"></span><span>运营效率中台 <small>V2</small></span></a>
@@ -17,8 +17,8 @@
         {% set items = [
           ('/', '总览', 'chart'),
           ('/metrics', '数据', 'calendar'),
-          ('/ai-review', 'AI分析', 'sparkles'),
           ('/report-builder', '生成报告', 'file'),
+          ('/hotspots', '每日热点', 'sparkles'),
           ('/topic-center', '选题中心', 'sparkles'),
           ('/breakdown', '爆款拆解', 'file'),
           ('/materials', '素材库', 'upload'),
@@ -46,7 +46,7 @@
       </main>
     </div>
   </div>
-  <button class="assistant-fab" type="button" data-assistant-toggle>AI 助手</button>
+  <button class="assistant-fab" type="button" data-assistant-toggle title="{{ '未配置API密钥' if not (settings is defined and settings.openai_api_key) else '' }}">AI 助手</button>
   <section class="assistant-panel" data-assistant-panel hidden>
     <div class="assistant-head">
       <strong>AI 助手</strong>

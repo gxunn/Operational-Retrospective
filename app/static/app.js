@@ -106,6 +106,7 @@ const assistantPanel = document.querySelector('[data-assistant-panel]');
 const assistantClose = document.querySelector('[data-assistant-close]');
 const assistantForm = document.querySelector('[data-assistant-form]');
 const assistantLog = document.querySelector('[data-assistant-log]');
+const openaiConfigured = document.body?.dataset.openaiConfigured === 'true';
 
 function appendAssistantMessage(role, text) {
   if (!assistantLog) return;
@@ -118,6 +119,10 @@ function appendAssistantMessage(role, text) {
 
 if (assistantToggle && assistantPanel) {
   assistantToggle.addEventListener('click', () => {
+    if (!openaiConfigured) {
+      flashNotice('未配置API密钥');
+      return;
+    }
     assistantPanel.hidden = false;
     assistantPanel.classList.add('open');
   });
