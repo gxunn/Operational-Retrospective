@@ -92,6 +92,62 @@ document.querySelectorAll('[data-copy]').forEach((button) => {
   });
 });
 
+const breakdownDetail = document.querySelector('[data-breakdown-detail]');
+if (breakdownDetail) {
+  const statusUrl = breakdownDetail.dataset.breakdownStatusUrl;
+  const statusPill = breakdownDetail.querySelector('[data-breakdown-status-pill]');
+  const progressBar = breakdownDetail.querySelector('[data-breakdown-progress-bar]');
+  const progressText = breakdownDetail.querySelector('[data-breakdown-progress-text]');
+  const taskTip = breakdownDetail.querySelector('[data-breakdown-task-tip]');
+  const errorBox = breakdownDetail.querySelector('[data-breakdown-error]');
+  const markdownBox = breakdownDetail.querySelector('[data-breakdown-markdown]');
+  let polling = null;
+
+  const renderState = (payload) => {
+    if (!payload) return;
+    if (statusPill) statusPill.textContent = payload.status || '未开始';
+    if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, Number(payload.progress || 0)))}%`;
+    if (progressText) progressText.textContent = `${Math.max(0, Math.min(100, Number(payload.progress || 0)))}%`;
+    if (taskTip) {
+      taskTip.textContent = payload.status === '失败'
+        ? (payload.error_message || '失败：未生成拆解结果')
+        : (payload.status === '分析中' ? '正在分析，页面会自动刷新' : '已保存到案例库');
+    }
+    if (errorBox) {
+      const failed = payload.status === '失败' && payload.error_message;
+      errorBox.hidden = !failed;
+      errorBox.textContent = failed ? payload.error_message : '';
+    }
+    if (markdownBox && payload.markdown_html) markdownBox.innerHTML = payload.markdown_html;
+  };
+
+  const stopPolling = () => {
+    if (polling) window.clearInterval(polling);
+    polling = null;
+  };
+
+  const fetchState = async () => {
+    try {
+      const response = await fetch(statusUrl, { headers: { Accept: 'application/json' } });
+      if (!response.ok) {
+        stopPolling();
+        return;
+      }
+      const payload = await response.json();
+      renderState(payload);
+      if (payload.status !== '分析中') stopPolling();
+    } catch (_) {
+      stopPolling();
+    }
+  };
+
+  const initialStatus = breakdownDetail.dataset.breakdownStatus || '未开始';
+  if (initialStatus === '分析中') {
+    fetchState();
+    polling = window.setInterval(fetchState, 2000);
+  }
+}
+
 document.querySelectorAll('form[data-confirm], button[data-confirm]').forEach((item) => {
   item.addEventListener('submit', (event) => {
     if (!window.confirm(item.dataset.confirm || '确认继续吗？')) event.preventDefault();

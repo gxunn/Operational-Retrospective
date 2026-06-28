@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base
 from app.models import ContentDailyMetric, DailyAccountMetric, ImportBatch, PlatformAccount, User
 from app.services.importer import file_sha256, import_batch, parse_date, parse_number, read_table, suggest_mapping
+from app.services.breakdown import build_breakdown_markdown, normalize_breakdown_url
 from app.services.metrics import comparison_groups, summarize_metrics
 from app.services.hotspots import normalize_payload
 from app.security import hash_password, verify_password
@@ -187,3 +188,64 @@ def test_hotspot_payload_normalization_filters_unsafe_urls():
     assert payload["realtime"][0]["source_urls"] == ["https://example.com/a"]
     assert payload["topics"][0]["priority"] == "B"
     assert payload["sources"] == ["https://example.com/a", "https://example.com/source"]
+
+
+def test_breakdown_markdown_and_url_normalization():
+    analysis = {
+        "score": {"explosive_potential": 90, "reuse_value": 88, "difficulty": 32, "overall_suggestion": "值得复用"},
+        "video_info": {
+            "video_url": "https://example.com/video",
+            "video_title": "测试标题",
+            "play_count": "1,000",
+            "like_count": "100",
+            "comment_count": "10",
+            "duration": "30s",
+        },
+        "core_judgment": {
+            "why": "结构清晰",
+            "core_attraction": "信息密度高",
+            "retention_reason": "开头有钩子",
+            "interaction_reason": "话题性强",
+        },
+        "title_analysis": {
+            "structure": "场景前置",
+            "keywords": "无人机足球",
+            "emotional_hook": "好奇心",
+            "templates": ["痛点 + 结果 + 行动"],
+        },
+        "opening_analysis": {
+            "hook": "先给结果",
+            "visual_impact": "画面冲击",
+            "information_density": "高",
+            "reuse_for_drone_football": "适合复用",
+        },
+        "content_structure": {
+            "opening": "直接切入",
+            "conflict": "提出问题",
+            "process": "演示过程",
+            "result_feedback": "结果明确",
+            "cta": "引导评论",
+        },
+        "camera_rhythm": {
+            "rhythm": "前快后稳",
+            "focus": "动作细节",
+            "transition": "顺滑切换",
+            "music": "节奏感强",
+        },
+        "interaction": {
+            "likely_comments": ["这个怎么拍", "设备是什么"],
+            "discussion_topics": ["如何入门", "训练多久"],
+            "pinned_comment": "想看脚本可以留言",
+        },
+        "reuse_plan": {
+            "adaptation_direction": "改成无人机足球版本",
+            "script": "三步讲清楚",
+            "recommended_titles": ["标题一", "标题二"],
+            "recommended_cover_lines": ["封面一", "封面二"],
+            "recommended_publish_time": "今晚 8 点",
+        },
+    }
+    markdown = build_breakdown_markdown({}, analysis)
+    assert "# 爆款视频拆解报告" in markdown
+    assert "## 8. 无人机足球账号可复用方案" in markdown
+    assert normalize_breakdown_url("example.com/test").startswith("https://")

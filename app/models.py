@@ -177,6 +177,11 @@ class VideoBreakdown(Base):
     cover_description: Mapped[str] = mapped_column(Text, default="")
     script_content: Mapped[str] = mapped_column(Text, default="")
     analysis_json: Mapped[str] = mapped_column(Text, default="{}")
+    analysis_markdown: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="未开始")
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlparse
 
-from fastapi import FastAPI, File, Form, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -42,6 +42,12 @@ from .services.emailer import send_report_email
 from .services.importer import FIELDS, file_sha256, import_batch, preview
 from .services.insights import detect_anomalies, explain_forecast, forecast_trend
 from .services.hotspots import generate_hotspots, report_payload
+from .services.breakdown import (
+    clean_text,
+    friendly_openai_error,
+    generate_breakdown_analysis,
+    normalize_breakdown_url,
+)
 from .services.metrics import comparison_groups, summarize_metrics
 from .services.reporting import LABELS, METRICS, generate_report, generate_summary_report, report_stats, render_docx
 from .services.runtime import (
@@ -104,6 +110,35 @@ def initialize() -> None:
         add_column("email_recipients", "tags_json", "tags_json TEXT DEFAULT '[]'")
         add_column("content_daily_metrics", "private_messages", "private_messages FLOAT DEFAULT 0")
         add_column("content_daily_metrics", "conversion_note", "conversion_note TEXT DEFAULT ''")
+        add_column("video_breakdowns", "analysis_markdown", "analysis_markdown TEXT DEFAULT ''")
+        add_column("video_breakdowns", "status", "status VARCHAR(20) DEFAULT '未开始'")
+        add_column("video_breakdowns", "progress", "progress INTEGER DEFAULT 0")
+        add_column("video_breakdowns", "error_message", "error_message TEXT DEFAULT ''")
+        add_column("video_breakdowns", "updated_at", "updated_at DATETIME")
+
+        breakdown_rows = conn.execute(text("SELECT id, analysis_json, analysis_markdown, status, progress, error_message FROM video_breakdowns")).mappings().all()
+        for row in breakdown_rows:
+            status = str(row["status"] or "").strip()
+            analysis_markdown = str(row["analysis_markdown"] or "").strip()
+            analysis_json = str(row["analysis_json"] or "{}")
+            if not status or status == "未开始":
+                try:
+                    payload = json.loads(analysis_json)
+                except Exception:
+                    payload = {}
+                if analysis_markdown or payload.get("markdown"):
+                    conn.execute(
+                        text(
+                            "UPDATE video_breakdowns SET status = :status, progress = :progress, analysis_markdown = :markdown, updated_at = :updated_at WHERE id = :id"
+                        ),
+                        {
+                            "status": "已完成",
+                            "progress": 100,
+                            "markdown": analysis_markdown or str(payload.get("markdown", "")),
+                            "updated_at": datetime.now().replace(microsecond=0),
+                            "id": row["id"],
+                        },
+                    )
     storage_dir = settings.storage_dir
     for folder in (storage_dir, storage_dir / "uploads", storage_dir / "reports"):
         folder.mkdir(parents=True, exist_ok=True)
@@ -250,6 +285,28 @@ def suggest_material_tags(*parts: str) -> list[str]:
     if not tags and text:
         tags = [part.strip() for part in text.replace("，", ",").split(",") if part.strip()][:3]
     return list(dict.fromkeys(tags))[:8]
+
+
+def breakdown_display_status(value: str, progress: int) -> tuple[str, int]:
+    status = (value or "未开始").strip() or "未开始"
+    safe_progress = max(0, min(100, int(progress or 0)))
+    if status == "已完成":
+        safe_progress = 100
+    if status == "未开始" and safe_progress > 0:
+        safe_progress = 0
+    return status, safe_progress
+
+
+def breakdown_report_data(case: VideoBreakdown | None) -> dict:
+    if not case:
+        return {}
+    data = safe_json_loads(case.analysis_json, {})
+    data["analysis_markdown"] = case.analysis_markdown or ""
+    data["markdown_html"] = md.markdown(case.analysis_markdown or "", extensions=["tables", "fenced_code"])
+    data["status"] = case.status or "未开始"
+    data["progress"] = int(case.progress or 0)
+    data["error_message"] = case.error_message or ""
+    return data
 
 
 
@@ -1738,69 +1795,160 @@ def generate_topic_center(
         return page(request, "topic_center.html", db, topics=topics, keyword=keyword, business=base_business, message=f"已生成 {created} 个选题")
 
 
+def build_breakdown_overview(
+    db: Session,
+    q: str = "",
+    platform: str = "",
+    sort_by: str = "created_at",
+    order: str = "desc",
+    page_no: int = 1,
+    selected_case_id: int | None = None,
+):
+    query = select(VideoBreakdown)
+    if q:
+        needle = q.strip()
+        query = query.where(or_(VideoBreakdown.title.contains(needle), VideoBreakdown.platform.contains(needle), VideoBreakdown.cover_description.contains(needle), VideoBreakdown.source_url.contains(needle)))
+    if platform:
+        query = query.where(VideoBreakdown.platform == platform)
+    sort_map = {
+        "views": VideoBreakdown.views,
+        "likes": VideoBreakdown.likes,
+        "comments": VideoBreakdown.comments,
+        "created_at": VideoBreakdown.created_at,
+    }
+    sort_column = sort_map.get(sort_by, VideoBreakdown.created_at)
+    sort_order = sort_column.asc() if order == "asc" else sort_column.desc()
+    all_cases = db.scalars(query.order_by(sort_order)).all()
+    total_cases = len(all_cases)
+    per_page = 8
+    page_no = max(1, page_no)
+    total_pages = max(1, (total_cases + per_page - 1) // per_page)
+    page_no = min(page_no, total_pages)
+    start = (page_no - 1) * per_page
+    end = start + per_page
+    cases = all_cases[start:end]
+    case_cards = []
+    for item in cases:
+        payload = safe_json_loads(item.analysis_json, {})
+        score = payload.get("score", {}) if isinstance(payload, dict) else {}
+        score_value = score.get("explosive_potential") if isinstance(score, dict) else None
+        case_cards.append(
+            {
+                "item": item,
+                "score": score_value if item.status == "已完成" and score_value not in {None, "", 0, 0.0} else "数据未填写",
+            }
+        )
+    avg_views = sum(case.views for case in all_cases) / total_cases if total_cases else 0
+    latest_case = db.scalar(select(VideoBreakdown).order_by(VideoBreakdown.created_at.desc()))
+    report = db.get(VideoBreakdown, selected_case_id) if selected_case_id else latest_case
+    if report and report.id not in {item.id for item in all_cases}:
+        report = latest_case
+    latest_status, latest_progress = breakdown_display_status(report.status if report else "未开始", report.progress if report else 0)
+    eta = "处理中" if latest_status == "分析中" else ("已完成" if latest_status == "已完成" else ("失败" if latest_status == "失败" else "未开始"))
+    selected_platform = platform if platform in {"抖音", "小红书", "视频号", "公众号", "其他"} else ""
+    return {
+        "cases": cases,
+        "recent_cases": case_cards[:5],
+        "hot_rankings": sorted(all_cases, key=lambda item: item.views or 0, reverse=True)[:5],
+        "report": report,
+        "report_data": breakdown_report_data(report),
+        "q": q,
+        "selected_platform": selected_platform,
+        "sort_by": sort_by if sort_by in sort_map else "created_at",
+        "sort_order": "asc" if order == "asc" else "desc",
+        "page_no": page_no,
+        "total_pages": total_pages,
+        "total_cases": total_cases,
+        "breakdown_stats": {
+            "total_cases": total_cases,
+            "avg_views": avg_views,
+            "progress": latest_progress if report else 0,
+            "analysis_status": latest_status if report else "未开始",
+            "eta": eta if report else "未开始",
+        },
+    }
+
+
 @app.get("/breakdown", response_class=HTMLResponse)
 def breakdown_page(request: Request, q: str = "", platform: str = "", sort_by: str = "created_at", order: str = "desc", page_no: int = 1):
     with SessionLocal() as db:
-        query = select(VideoBreakdown)
-        if q:
-            needle = q.strip()
-            query = query.where(or_(VideoBreakdown.title.contains(needle), VideoBreakdown.platform.contains(needle), VideoBreakdown.cover_description.contains(needle)))
-        if platform:
-            query = query.where(VideoBreakdown.platform == platform)
-        sort_map = {
-            "views": VideoBreakdown.views,
-            "likes": VideoBreakdown.likes,
-            "comments": VideoBreakdown.comments,
-            "created_at": VideoBreakdown.created_at,
-        }
-        sort_column = sort_map.get(sort_by, VideoBreakdown.created_at)
-        sort_order = sort_column.asc() if order == "asc" else sort_column.desc()
-        all_cases = db.scalars(query.order_by(sort_order)).all()
-        total_cases = len(all_cases)
-        per_page = 8
-        page_no = max(1, page_no)
-        total_pages = max(1, (total_cases + per_page - 1) // per_page)
-        page_no = min(page_no, total_pages)
-        start = (page_no - 1) * per_page
-        end = start + per_page
-        cases = all_cases[start:end]
-        avg_views = sum(case.views for case in all_cases) / total_cases if total_cases else 0
-        progress = min(100, 18 + total_cases * 8)
-        analysis_status = "已完成" if total_cases else "等待首条拆解"
-        eta = "预计 8 分钟" if total_cases else "预计 1 分钟"
-        recent_cases = cases[:5]
-        hot_rankings = sorted(all_cases, key=lambda item: item.views or 0, reverse=True)[:5]
-        selected_platform = platform if platform in {"抖音", "小红书", "视频号", "公众号", "其他"} else ""
-        report = all_cases[0] if all_cases else None
-        return page(
-            request,
-            "breakdown.html",
-            db,
-            cases=cases,
-            recent_cases=recent_cases,
-            hot_rankings=hot_rankings,
-            report=report,
-            report_data=safe_json_loads(report.analysis_json, {}) if report else {},
-            q=q,
-            selected_platform=selected_platform,
-            sort_by=sort_by if sort_by in sort_map else "created_at",
-            sort_order="asc" if order == "asc" else "desc",
-            page_no=page_no,
-            total_pages=total_pages,
-            total_cases=total_cases,
-            breakdown_stats={
-                "total_cases": total_cases,
-                "avg_views": avg_views,
-                "progress": progress,
-                "analysis_status": analysis_status,
-                "eta": eta,
-            },
+        context = build_breakdown_overview(db, q=q, platform=platform, sort_by=sort_by, order=order, page_no=page_no)
+        return page(request, "breakdown.html", db, **context)
+
+
+@app.get("/breakdown/{breakdown_id}", response_class=HTMLResponse)
+def breakdown_detail(request: Request, breakdown_id: int, q: str = "", platform: str = "", sort_by: str = "created_at", order: str = "desc", page_no: int = 1):
+    with SessionLocal() as db:
+        if not db.get(VideoBreakdown, breakdown_id):
+            return redirect("/breakdown", "案例不存在")
+        context = build_breakdown_overview(db, q=q, platform=platform, sort_by=sort_by, order=order, page_no=page_no, selected_case_id=breakdown_id)
+        return page(request, "breakdown.html", db, **context)
+
+
+def _run_breakdown_task(breakdown_id: int, payload: dict[str, str]) -> None:
+    with SessionLocal() as db:
+        case = db.get(VideoBreakdown, breakdown_id)
+        if not case:
+            return
+        runtime = runtime_settings(db)
+        case.status = "分析中"
+        case.progress = 15
+        case.error_message = ""
+        case.updated_at = datetime.now().replace(microsecond=0)
+        db.commit()
+        try:
+            case.progress = 34
+            case.updated_at = datetime.now().replace(microsecond=0)
+            db.commit()
+            analysis, markdown = generate_breakdown_analysis(runtime, payload)
+            if not markdown.strip():
+                raise RuntimeError("未生成拆解结果，请重试。")
+            case.analysis_json = json.dumps(analysis, ensure_ascii=False)
+            case.analysis_markdown = markdown
+            case.status = "已完成"
+            case.progress = 100
+            case.error_message = ""
+        except Exception as exc:
+            case.status = "失败"
+            case.progress = min(max(case.progress or 0, 0), 99)
+            case.analysis_markdown = ""
+            if isinstance(exc, RuntimeError) and str(exc).strip():
+                case.error_message = str(exc).strip()
+            else:
+                case.error_message = friendly_openai_error(exc)
+            case.analysis_json = json.dumps({"error": case.error_message}, ensure_ascii=False)
+        case.updated_at = datetime.now().replace(microsecond=0)
+        db.commit()
+
+
+@app.get("/breakdown/{breakdown_id}/status")
+def breakdown_status(request: Request, breakdown_id: int):
+    with SessionLocal() as db:
+        if not current_user(request, db):
+            return JSONResponse({"error": "请先登录"}, status_code=401)
+        case = db.get(VideoBreakdown, breakdown_id)
+        if not case:
+            return JSONResponse({"error": "案例不存在"}, status_code=404)
+        data = breakdown_report_data(case)
+        return JSONResponse(
+            {
+                "id": case.id,
+                "status": case.status or "未开始",
+                "progress": int(case.progress or 0),
+                "error_message": case.error_message or "",
+                "analysis_markdown": case.analysis_markdown or "",
+                "markdown_html": data.get("markdown_html", ""),
+                "title": case.title or "爆款拆解报告",
+                "created_at": case.created_at.isoformat(),
+                "updated_at": case.updated_at.isoformat() if getattr(case, "updated_at", None) else "",
+            }
         )
 
 
 @app.post("/breakdown/generate")
 def generate_breakdown(
     request: Request,
+    background_tasks: BackgroundTasks,
     source_url: str = Form(""),
     title: str = Form(""),
     platform: str = Form(""),
@@ -1814,148 +1962,89 @@ def generate_breakdown(
 ):
     verify_csrf(request, csrf)
     with SessionLocal() as db:
-        if not can(current_actor(request, db), "use_breakdown"):
+        actor = current_actor(request, db)
+        if not can(actor, "use_breakdown"):
             return redirect("/breakdown", "没有权限")
-
-        def is_non_negative(value: float) -> bool:
-            try:
-                return float(value) >= 0
-            except Exception:
-                return False
-
-        def clean_text(value: str) -> str:
-            return "".join(ch for ch in str(value).replace("\x00", "") if ch == "\n" or ch == "\t" or ord(ch) >= 32).strip()
-
-        def clean_markdown_lines(lines: list[str]) -> list[str]:
-            cleaned: list[str] = []
-            for line in lines:
-                text = clean_text(line)
-                if not text:
-                    continue
-                text = text.lstrip("•*·-").strip()
-                cleaned.append(text)
-            return cleaned
-
-        source_url = clean_text(source_url)
-        if source_url and "://" not in source_url and "." in source_url:
-            source_url = f"https://{source_url}"
+        source_url = normalize_breakdown_url(source_url)
         title = clean_text(title)
         platform = clean_text(platform)
         duration = clean_text(duration)
         cover_description = clean_text(cover_description)
         script_content = clean_text(script_content)
-        if not is_valid_http_url(source_url):
+        if not source_url:
             return redirect("/breakdown", "视频链接格式不正确，请填写常见平台的 http 或 https 链接")
-        if not all(is_non_negative(value) for value in (views, likes, comments)):
+        if not all(float(value) >= 0 for value in (views, likes, comments)):
             return redirect("/breakdown", "播放量、点赞和评论不能为负数")
-        ratio = ((likes + comments) / views * 100) if views else 0
-        markdown_lines = [
-            f"# {title or '爆款拆解'}",
-            "",
-            "## 标题结构",
-            *[f"- {item}" for item in clean_markdown_lines([
-                "当前标题：%s" % (title or "未填写"),
-                "核心词靠前，利益点前置。",
-            ])],
-            "",
-            "## 前3秒钩子",
-            *[f"- {item}" for item in clean_markdown_lines([
-                "先抛结果，再给原因。",
-                "画面与口播同时给到强信息。",
-            ])],
-            "",
-            "## 情绪节奏",
-            *[f"- {item}" for item in clean_markdown_lines([
-                "开头提速，中段解释，结尾收束。",
-            ])],
-            "",
-            "## 卖点表达",
-            *[f"- {item}" for item in clean_markdown_lines([
-                f"当前互动率约 {ratio:.2f}%。",
-            ])],
-            "",
-            "## 转化设计",
-            *[f"- {item}" for item in clean_markdown_lines([
-                "在评论区和私信入口给明确动作。",
-            ])],
-            "",
-            "## 可复用模板",
-            *[f"- {item}" for item in clean_markdown_lines([
-                "痛点 + 场景 + 结果 + 行动指令",
-            ])],
-            "",
-            "## 可延伸选题",
-            *[f"- {item}" for item in clean_markdown_lines([
-                "同主题换人群、换场景、换结果。",
-            ])],
-        ]
-        analysis = {
-            "title_structure": [
-                "核心词前置，利益点第一句出现。",
-                "标题尽量保留明确的人群或场景。",
-            ],
-            "hook": [
-                "前 3 秒先给结果，再补过程。",
-                "画面和口播同时给出强信息。",
-            ],
-            "rhythm": [
-                "前段提速，中段解释，结尾收束。",
-                "每 5 到 7 秒推动一次信息变化。",
-            ],
-            "selling_point": [
-                f"当前互动率约 {ratio:.2f}%。",
-                "高互动内容通常围绕明确场景和具体结果展开。",
-            ],
-            "conversion": [
-                "评论区和私信入口要给出明确动作。",
-                "结尾加入下一步动作，不要只停留在展示。",
-            ],
-            "template": "痛点 + 场景 + 结果 + 行动指令",
-            "extension_topics": [
-                "同主题换人群",
-                "同场景换结果",
-                "同结果换表达方式",
-            ],
-            "ratio": ratio,
-            "markdown": "\n".join(markdown_lines),
-        }
+        if not runtime_settings(db).openai_api_key:
+            case = VideoBreakdown(
+                source_url=source_url,
+                title=title,
+                platform=platform,
+                views=views,
+                likes=likes,
+                comments=comments,
+                duration=duration,
+                cover_description=cover_description,
+                script_content=script_content,
+                analysis_json=json.dumps({"error": "未配置 OpenAI API Key，请在环境变量中配置 OPENAI_API_KEY。"}, ensure_ascii=False),
+                analysis_markdown="",
+                status="失败",
+                progress=0,
+                error_message="未配置 OpenAI API Key，请在环境变量中配置 OPENAI_API_KEY。",
+            )
+            db.add(case)
+            db.commit()
+            db.refresh(case)
+            return redirect(f"/breakdown/{case.id}", case.error_message)
         case = VideoBreakdown(
-            source_url=source_url.strip(),
-            title=title.strip(),
-            platform=platform.strip(),
+            source_url=source_url,
+            title=title,
+            platform=platform,
             views=views,
             likes=likes,
             comments=comments,
-            duration=duration.strip(),
-            cover_description=cover_description.strip(),
-            script_content=script_content.strip(),
-            analysis_json=json.dumps(analysis, ensure_ascii=False),
+            duration=duration,
+            cover_description=cover_description,
+            script_content=script_content,
+            analysis_json=json.dumps({"status": "queued"}, ensure_ascii=False),
+            analysis_markdown="",
+            status="分析中",
+            progress=15,
+            error_message="",
         )
         db.add(case)
         db.commit()
-        cases = db.scalars(select(VideoBreakdown).order_by(VideoBreakdown.created_at.desc()).limit(50)).all()
-        report_data = safe_json_loads(case.analysis_json, {})
-        report_data["markdown_html"] = md.markdown(report_data.get("markdown", ""), extensions=["tables", "fenced_code"])
-        recent_cases = cases[:5]
-        hot_rankings = sorted(cases, key=lambda item: item.views or 0, reverse=True)[:5]
-        return page(
-            request,
-            "breakdown.html",
-            db,
-            cases=cases,
-            recent_cases=recent_cases,
-            hot_rankings=hot_rankings,
-            report=case,
-            report_data=report_data,
-            breakdown_stats={
-                "total_cases": len(cases),
-                "avg_views": sum(item.views for item in cases) / len(cases) if cases else 0,
-                "progress": min(100, 18 + len(cases) * 8),
-                "analysis_status": "已完成",
-                "eta": "预计 8 分钟",
+        db.refresh(case)
+        background_tasks.add_task(
+            _run_breakdown_task,
+            case.id,
+            {
+                "source_url": source_url,
+                "title": title,
+                "platform": platform,
+                "views": views,
+                "likes": likes,
+                "comments": comments,
+                "duration": duration,
+                "cover_description": cover_description,
+                "script_content": script_content,
             },
-            message="爆款拆解已保存到案例库",
         )
+        return redirect(f"/breakdown/{case.id}", "拆解任务已开始，完成后会自动显示结果")
+
+
+@app.post("/breakdown/{breakdown_id}/delete")
+def delete_breakdown(breakdown_id: int, request: Request, csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = current_actor(request, db)
+        if not actor or not can(actor, "delete_data"):
+            return redirect("/breakdown", "没有权限")
+        case = db.get(VideoBreakdown, breakdown_id)
+        if case:
+            db.delete(case)
+            db.commit()
+    return redirect("/breakdown", "拆解案例已删除")
 
 
 @app.get("/materials", response_class=HTMLResponse)

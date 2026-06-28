@@ -4,12 +4,12 @@
 <section class="page-heading breakdown-hero">
   <div>
     <h1>爆款拆解</h1>
-    <p class="breakdown-subtitle">分析爆款内容结构并生成拆解报告</p>
+    <p class="breakdown-subtitle">真实生成拆解报告，支持任务进度、失败提示和历史案例查看</p>
   </div>
   <div class="heading-actions">
-    <span class="schedule-note u-inline">拆解进度 <strong>{{ breakdown_stats.progress if breakdown_stats else 18 }}%</strong></span>
-    <span class="schedule-note u-inline">AI 分析 <strong>{{ breakdown_stats.analysis_status if breakdown_stats else '等待首条拆解' }}</strong></span>
-    <span class="schedule-note u-inline">预计完成 <strong>{{ breakdown_stats.eta if breakdown_stats else '预计 1 分钟' }}</strong></span>
+    <span class="schedule-note u-inline">拆解进度 <strong>{{ breakdown_stats.progress if breakdown_stats else 0 }}%</strong></span>
+    <span class="schedule-note u-inline">AI 分析 <strong>{{ breakdown_stats.analysis_status if breakdown_stats else '未开始' }}</strong></span>
+    <span class="schedule-note u-inline">当前状态 <strong>{{ breakdown_stats.eta if breakdown_stats else '未开始' }}</strong></span>
   </div>
 </section>
 
@@ -26,8 +26,8 @@
   </div>
   <div class="breakdown-metric">
     <span>拆解进度</span>
-    <strong>{{ breakdown_stats.progress if breakdown_stats else 18 }}%</strong>
-    <small>模拟 AI 处理状态</small>
+    <strong>{{ breakdown_stats.progress if breakdown_stats else 0 }}%</strong>
+    <small>真实任务进度</small>
   </div>
   <div class="breakdown-metric">
     <span>最近更新时间</span>
@@ -87,24 +87,24 @@
       <div class="panel-head">
         <div>
           <h2>拆解状态</h2>
-          <p>用于展示 AI 处理与运营进度</p>
+          <p>用于展示真实任务状态、进度和失败原因</p>
         </div>
       </div>
       <div class="status-rail">
         <div class="status-rail-item">
           <span>AI 分析状态</span>
-          <strong>{{ breakdown_stats.analysis_status if breakdown_stats else '等待首条拆解' }}</strong>
-          <small>当前为 mock 逻辑，后续可直接接真实 AI 接口</small>
+          <strong>{{ breakdown_stats.analysis_status if breakdown_stats else '未开始' }}</strong>
+          <small>状态只会显示未开始、分析中、已完成、失败</small>
         </div>
         <div class="status-rail-item">
-          <span>预计完成时间</span>
-          <strong>{{ breakdown_stats.eta if breakdown_stats else '预计 1 分钟' }}</strong>
-          <small>根据拆解数量自动调整</small>
+          <span>失败提示</span>
+          <strong>{{ report.error_message if report and report.status == '失败' and report.error_message else '无' }}</strong>
+          <small>API 失败时会明确显示原因</small>
         </div>
         <div class="status-rail-item">
           <span>拆解进度</span>
-          <strong>{{ breakdown_stats.progress if breakdown_stats else 18 }}%</strong>
-          <small>完成后会自动保存到案例库</small>
+          <strong>{{ breakdown_stats.progress if breakdown_stats else 0 }}%</strong>
+          <small>完成后自动写入数据库</small>
         </div>
       </div>
     </section>
@@ -137,20 +137,31 @@
         <button class="button secondary">筛选</button>
       </form>
       <div class="case-list">
-        {% for item in recent_cases %}
+        {% for row in recent_cases %}
+        {% set item = row.item %}
         <article class="case-card">
           <div class="case-card-head">
             <div>
-              <h3>{{ item.title or '未命名爆款' }}</h3>
+              <h3><a href="/breakdown/{{ item.id }}">{{ item.title or '未命名爆款' }}</a></h3>
               <p>{{ item.platform or '未填写平台' }} · {{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
             </div>
-            {% if item.source_url %}<a class="table-link" href="{{ item.source_url }}" target="_blank" rel="noopener noreferrer">原链接</a>{% endif %}
+            <div class="case-actions">
+              {% if item.source_url %}<a class="table-link" href="{{ item.source_url }}" target="_blank" rel="noopener noreferrer">原链接</a>{% endif %}
+              {% if permissions.delete_data %}
+              <form method="post" action="/breakdown/{{ item.id }}/delete" data-confirm="确认删除这条拆解案例吗？">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <button class="text-button">删除</button>
+              </form>
+              {% endif %}
+            </div>
           </div>
           <div class="case-meta">
-            <span>播放 {{ '{:,.0f}'.format(item.views or 0) }}</span>
-            <span>点赞 {{ '{:,.0f}'.format(item.likes or 0) }}</span>
-            <span>评论 {{ '{:,.0f}'.format(item.comments or 0) }}</span>
-            <span>时长 {{ item.duration or '未知' }}</span>
+            <span>播放 {{ '{:,.0f}'.format(item.views) if item.views else '数据未填写' }}</span>
+            <span>点赞 {{ '{:,.0f}'.format(item.likes) if item.likes else '数据未填写' }}</span>
+            <span>评论 {{ '{:,.0f}'.format(item.comments) if item.comments else '数据未填写' }}</span>
+            <span>时长 {{ item.duration or '数据未填写' }}</span>
+            <span>状态 {{ item.status or '未开始' }}</span>
+            <span>评分 {{ row.score }}</span>
           </div>
         </article>
         {% else %}
@@ -202,28 +213,43 @@
 </section>
 
 {% if report %}
-<section class="panel report-paper u-mt-24">
-  <h1>{{ report.title or '爆款拆解报告' }}</h1>
-  {% if report_data %}
+<section class="panel report-paper u-mt-24" data-breakdown-detail data-breakdown-status="{{ report.status or '未开始' }}" data-breakdown-status-url="/breakdown/{{ report.id }}/status">
+  <div class="panel-head">
+    <div>
+      <h2>{{ report.title or '爆款拆解报告' }}</h2>
+      <p>{{ report.source_url or '未填写链接' }}</p>
+    </div>
+    <span class="status-dot {{ 'on' if report.status == '已完成' else ('off' if report.status == '失败' else 'wait') }}" data-breakdown-status-pill>{{ report.status or '未开始' }}</span>
+  </div>
+  <div class="breakdown-task-bar">
+    <div class="upload-progress"><div class="upload-progress-bar" data-breakdown-progress-bar style="width: {{ report.progress if report.progress is not none else 0 }}%"></div></div>
+    <div class="breakdown-task-meta">
+      <span data-breakdown-progress-text>{{ report.progress if report.progress is not none else 0 }}%</span>
+      <small data-breakdown-task-tip>{{ report.error_message if report.status == '失败' and report.error_message else ('正在分析，页面会自动刷新' if report.status == '分析中' else '已保存到案例库') }}</small>
+    </div>
+  </div>
+  <div class="breakdown-error" data-breakdown-error {% if not (report.status == '失败' and report.error_message) %}hidden{% endif %}>{{ report.error_message if report.error_message else '' }}</div>
   <div class="v2-summary-grid">
     <div class="v2-summary-card">
-      <span>标题结构</span>
-      <strong>{{ report_data.template }}</strong>
-      <small>适合复用的标题骨架</small>
+      <span>爆款潜力评分</span>
+      <strong>{{ report_data.get('score', {}).get('explosive_potential', '数据未填写') if report_data and report_data.get('score', {}).get('explosive_potential') not in [None, '', 0] else '数据未填写' }}</strong>
+      <small>越高越值得复用</small>
     </div>
     <div class="v2-summary-card">
-      <span>AI 分析状态</span>
-      <strong>{{ '%.2f'|format(report_data.ratio) }}%</strong>
-      <small>互动率参考值</small>
+      <span>复用价值评分</span>
+      <strong>{{ report_data.get('score', {}).get('reuse_value', '数据未填写') if report_data and report_data.get('score', {}).get('reuse_value') not in [None, '', 0] else '数据未填写' }}</strong>
+      <small>适合无人机足球账号</small>
+    </div>
+    <div class="v2-summary-card">
+      <span>执行难度评分</span>
+      <strong>{{ report_data.get('score', {}).get('difficulty', '数据未填写') if report_data and report_data.get('score', {}).get('difficulty') not in [None, '', 0] else '数据未填写' }}</strong>
+      <small>越低越容易落地</small>
     </div>
   </div>
-  <div class="markdown-body">
-    {{ report_data.markdown_html | safe }}
-  </div>
-  {% else %}
-  <h2>完整分析</h2>
-  <div class="report-copy">{{ report.analysis_json }}</div>
+  {% if report.status == '失败' and not report.analysis_markdown %}
+  <div class="empty-inline">失败：未生成拆解结果</div>
   {% endif %}
+  <div class="markdown-body" data-breakdown-markdown>{% if report_data and report_data.markdown_html %}{{ report_data.markdown_html | safe }}{% endif %}</div>
 </section>
 {% endif %}
 {% endblock %}
