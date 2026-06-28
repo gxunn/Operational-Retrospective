@@ -1,7 +1,11 @@
+import html
 import json
+import re
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from openai import OpenAI
 
 BREAKDOWN_STATUS_LABELS = {
@@ -29,13 +33,36 @@ BREAKDOWN_SCHEMA = {
             "type": "object",
             "properties": {
                 "video_url": {"type": "string"},
+                "platform": {"type": "string"},
                 "video_title": {"type": "string"},
+                "author_name": {"type": "string"},
+                "publish_time": {"type": "string"},
+                "duration": {"type": "string"},
                 "play_count": {"type": "string"},
                 "like_count": {"type": "string"},
                 "comment_count": {"type": "string"},
-                "duration": {"type": "string"},
+                "collect_count": {"type": "string"},
+                "share_count": {"type": "string"},
+                "cover_info": {"type": "string"},
+                "video_text": {"type": "string"},
+                "transcript": {"type": "string"},
             },
-            "required": ["video_url", "video_title", "play_count", "like_count", "comment_count", "duration"],
+            "required": [
+                "video_url",
+                "platform",
+                "video_title",
+                "author_name",
+                "publish_time",
+                "duration",
+                "play_count",
+                "like_count",
+                "comment_count",
+                "collect_count",
+                "share_count",
+                "cover_info",
+                "video_text",
+                "transcript",
+            ],
             "additionalProperties": False,
         },
         "core_judgment": {
@@ -137,6 +164,13 @@ BREAKDOWN_SCHEMA = {
     "additionalProperties": False,
 }
 
+_META_ATTR_RE = re.compile(r"([a-zA-Z0-9_:.-]+)\s*=\s*['\"]([^'\"]*)['\"]", re.I)
+_JSON_LD_RE = re.compile(r"<script[^>]+type=['\"]application/ld\+json['\"][^>]*>(.*?)</script>", re.I | re.S)
+_META_RE = re.compile(r"<meta\b[^>]*>", re.I)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+_SCRIPT_KEY_RE = re.compile(r'["\']?(playCount|likeCount|commentCount|collectCount|favoriteCount|shareCount|repostCount|viewCount)["\']?\s*[:=]\s*["\']?([\d,\.]+)(?:[万亿])?["\']?', re.I)
+_DATE_RE = re.compile(r'(?:20\d{2}[/-]\d{1,2}[/-]\d{1,2}(?:[ T]\d{1,2}:\d{1,2}(?::\d{1,2})?)?|20\d{2}年\d{1,2}月\d{1,2}日(?:\d{1,2}[:时]\d{1,2}(?:[:分]\d{1,2})?)?)')
+
 
 def normalize_source_url(value: str) -> str:
     text = clean_text(value)
@@ -192,6 +226,245 @@ def friendly_openai_error(exc: Exception) -> str:
     return f"OpenAI API 调用失败（{type(exc).__name__}）：{message}"
 
 
+def detect_platform_from_url(url: str) -> str:
+    host = (urlparse(url).netloc or "").lower()
+    if any(token in host for token in ("douyin.com", "iesdouyin.com", "snssdk.com", "tiktok.com")):
+        return "抖音"
+    if any(token in host for token in ("xiaohongshu.com", "xhslink.com", "xhscdn.com")):
+        return "小红书"
+    if any(token in host for token in ("channels.weixin.qq.com", "weixin.qq.com", "wechat.com")):
+        return "视频号"
+    if any(token in host for token in ("mp.weixin.qq.com", "weixin.qq.com")):
+        return "公众号"
+    return "其他"
+
+
+def _normalize_duration(value: Any) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    if text.isdigit():
+        seconds = int(text)
+        if seconds >= 60:
+            minutes, rest = divmod(seconds, 60)
+            return f"{minutes}分{rest}秒" if rest else f"{minutes}分"
+        return f"{seconds}秒"
+    return text
+
+
+def _first_nonempty(*values: Any) -> str:
+    for value in values:
+        text = clean_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _extract_meta_tags(html_text: str) -> dict[str, str]:
+    data: dict[str, str] = {}
+    for match in _META_RE.finditer(html_text):
+        attrs = {key.lower(): html.unescape(value) for key, value in _META_ATTR_RE.findall(match.group(0))}
+        key = attrs.get("property") or attrs.get("name") or attrs.get("itemprop")
+        content = attrs.get("content") or attrs.get("value")
+        if key and content and key.lower() not in data:
+            data[key.lower()] = clean_text(content)
+    return data
+
+
+def _extract_json_ld_objects(html_text: str) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+    for match in _JSON_LD_RE.finditer(html_text):
+        raw = match.group(1).strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(html.unescape(raw))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            objects.append(payload)
+        elif isinstance(payload, list):
+            objects.extend(item for item in payload if isinstance(item, dict))
+    return objects
+
+
+def _extract_script_counts(html_text: str) -> dict[str, str]:
+    counts = {
+        "play_count": "数据未填写",
+        "like_count": "数据未填写",
+        "comment_count": "数据未填写",
+        "collect_count": "数据未填写",
+        "share_count": "数据未填写",
+    }
+    for key, value in _SCRIPT_KEY_RE.findall(html_text):
+        normalized = clean_number(value)
+        if key.lower() in {"playcount", "viewcount"} and counts["play_count"] == "数据未填写":
+            counts["play_count"] = normalized
+        elif key.lower() == "likecount" and counts["like_count"] == "数据未填写":
+            counts["like_count"] = normalized
+        elif key.lower() == "commentcount" and counts["comment_count"] == "数据未填写":
+            counts["comment_count"] = normalized
+        elif key.lower() in {"collectcount", "favoritecount"} and counts["collect_count"] == "数据未填写":
+            counts["collect_count"] = normalized
+        elif key.lower() in {"sharecount", "repostcount"} and counts["share_count"] == "数据未填写":
+            counts["share_count"] = normalized
+    return counts
+
+
+def _read_ld_value(objects: list[dict[str, Any]], *keys: str) -> str:
+    for obj in objects:
+        values = [obj]
+        while values:
+            current = values.pop(0)
+            if not isinstance(current, dict):
+                continue
+            for key in keys:
+                if key in current and current[key]:
+                    value = current[key]
+                    if isinstance(value, dict):
+                        name = value.get("name") or value.get("text") or value.get("title")
+                        if name:
+                            return clean_text(name)
+                    elif isinstance(value, list):
+                        item = next((clean_text(item) for item in value if clean_text(item)), "")
+                        if item:
+                            return item
+                    else:
+                        return clean_text(value)
+            values.extend(current.values())
+    return ""
+
+
+def _parse_publish_time(value: str) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return text
+
+
+def fetch_video_info(url: str) -> dict[str, Any]:
+    source_url = normalize_source_url(url)
+    if not source_url:
+        return {"ok": False, "error": "视频链接格式不正确，请填写常见平台的 http 或 https 链接。"}
+    platform = detect_platform_from_url(source_url)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15, headers=headers) as client:
+            response = client.get(source_url)
+    except httpx.TimeoutException:
+        return {"ok": False, "platform": platform, "error": "抓取超时，该平台可能限制自动抓取，请手动补充视频信息后继续拆解。"}
+    except httpx.HTTPError as exc:
+        return {"ok": False, "platform": platform, "error": f"抓取失败：{clean_text(str(exc)) or '网络错误'}，请手动补充视频信息后继续拆解。"}
+
+    if response.status_code >= 400:
+        return {
+            "ok": False,
+            "platform": platform,
+            "error": f"抓取失败，平台返回 {response.status_code}。该平台可能限制自动抓取，请手动补充视频信息后继续拆解。",
+        }
+
+    content_type = response.headers.get("content-type", "")
+    if "html" not in content_type and "text" not in content_type and "json" not in content_type:
+        return {
+            "ok": False,
+            "platform": platform,
+            "error": "抓取失败，返回内容不是网页页面。该平台可能限制自动抓取，请手动补充视频信息后继续拆解。",
+        }
+
+    body = response.text or ""
+    if len(body.strip()) < 120:
+        return {
+            "ok": False,
+            "platform": platform,
+            "error": "抓取失败，页面内容过少。该平台可能限制自动抓取，请手动补充视频信息后继续拆解。",
+        }
+
+    meta = _extract_meta_tags(body)
+    ld_objects = _extract_json_ld_objects(body)
+    counts = _extract_script_counts(body)
+    title = _first_nonempty(
+        meta.get("og:title"),
+        meta.get("twitter:title"),
+        _read_ld_value(ld_objects, "name", "headline", "title"),
+        re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S).group(1) if _TITLE_RE.search(body) else "",
+    )
+    author_name = _first_nonempty(
+        meta.get("article:author"),
+        meta.get("author"),
+        _read_ld_value(ld_objects, "author"),
+    )
+    publish_time = _first_nonempty(
+        _parse_publish_time(meta.get("article:published_time", "")),
+        _parse_publish_time(meta.get("article:modified_time", "")),
+        _parse_publish_time(_read_ld_value(ld_objects, "uploadDate", "datePublished")),
+        _DATE_RE.search(body).group(0) if _DATE_RE.search(body) else "",
+    )
+    duration = _normalize_duration(
+        _first_nonempty(meta.get("video:duration"), _read_ld_value(ld_objects, "duration"))
+    )
+    cover_url = _first_nonempty(
+        meta.get("og:image"),
+        meta.get("twitter:image"),
+        _read_ld_value(ld_objects, "thumbnailUrl", "thumbnail")
+    )
+    description = _first_nonempty(
+        meta.get("og:description"),
+        meta.get("description"),
+        _read_ld_value(ld_objects, "description"),
+    )
+    video_text = description or clean_text(re.sub(r"\s+", " ", body))[:1000]
+    transcript = _first_nonempty(meta.get("keywords"), _read_ld_value(ld_objects, "transcript"))
+    if transcript and len(transcript) > 1200:
+        transcript = transcript[:1200]
+    if not title:
+        title = "未填写"
+    return {
+        "ok": True,
+        "platform": platform,
+        "fetch_status": "抓取成功",
+        "data": {
+            "platform": platform,
+            "source_url": source_url,
+            "title": title,
+            "cover_url": cover_url,
+            "author_name": author_name,
+            "publish_time": publish_time,
+            "duration": duration,
+            "views": counts["play_count"],
+            "likes": counts["like_count"],
+            "comments": counts["comment_count"],
+            "collect_count": counts["collect_count"],
+            "share_count": counts["share_count"],
+            "video_text": video_text,
+            "transcript": transcript,
+            "cover_description": description,
+            "fetch_status": "抓取成功",
+            "fetch_error": "",
+        },
+    }
+
+
+def _script_placeholder(payload: dict[str, Any]) -> str:
+    script = clean_text(payload.get("script_content"))
+    transcript = clean_text(payload.get("transcript"))
+    video_text = clean_text(payload.get("video_text"))
+    return script or transcript or video_text
+
+
 def build_breakdown_markdown(payload: dict[str, Any], analysis: dict[str, Any]) -> str:
     video = analysis["video_info"]
     score = analysis["score"]
@@ -202,16 +475,23 @@ def build_breakdown_markdown(payload: dict[str, Any], analysis: dict[str, Any]) 
     rhythm = analysis["camera_rhythm"]
     interaction = analysis["interaction"]
     reuse = analysis["reuse_plan"]
+    script_value = _script_placeholder(payload)
+    script_line = script_value if script_value else "数据未填写，缺少完整脚本，分析结果仅供参考。"
     lines = [
         "# 爆款视频拆解报告",
         "",
         "## 1. 视频基础信息",
         f"- 视频链接：{video['video_url']}",
         f"- 视频标题：{video['video_title']}",
-        f"- 播放量：{video['play_count']}",
+        f"- 作者昵称：{video['author_name']}",
+        f"- 发布时间：{video['publish_time']}",
+        f"- 视频时长：{video['duration']}",
         f"- 点赞数：{video['like_count']}",
         f"- 评论数：{video['comment_count']}",
-        f"- 视频时长：{video['duration']}",
+        f"- 收藏数：{video['collect_count']}",
+        f"- 转发数：{video['share_count']}",
+        f"- 封面信息：{video['cover_info']}",
+        f"- 视频文案/脚本：{script_line}",
         "",
         "## 2. 爆款核心判断",
         f"- 这个视频为什么可能成为爆款：{core['why']}",
@@ -273,11 +553,19 @@ def build_breakdown_prompt(payload: dict[str, Any]) -> str:
 - 如果某项数据缺失或为 0，请在对应分析中明确写“数据未填写”或说明无法判断。
 - 语言简洁、具体、可执行。
 - 所有数组字段请输出 3 到 5 条中文短句。
+- 如果缺少完整脚本，请在 analysis 中体现“缺少完整脚本，分析结果仅供参考”。
 - 不要输出 Markdown，后端会把 JSON 转成 Markdown。
 
 输入数据：
 {json.dumps(payload, ensure_ascii=False)}
 """
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return 0
 
 
 def generate_breakdown_analysis(settings, payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -305,13 +593,30 @@ def generate_breakdown_analysis(settings, payload: dict[str, Any]) -> tuple[dict
         raise RuntimeError("OpenAI 返回格式异常，未生成拆解结果。") from exc
     if not isinstance(analysis, dict):
         raise RuntimeError("OpenAI 返回格式异常，未生成拆解结果。")
+
+    video_info = analysis.get("video_info") if isinstance(analysis.get("video_info"), dict) else {}
+    raw_cover_url = clean_text(payload.get("cover_url"))
+    raw_cover_description = clean_text(payload.get("cover_description"))
+    raw_script = _script_placeholder(payload)
     analysis["video_info"] = {
         "video_url": clean_text(payload.get("source_url")),
-        "video_title": clean_text(payload.get("title")) or "未填写",
-        "play_count": clean_number(payload.get("views")),
-        "like_count": clean_number(payload.get("likes")),
-        "comment_count": clean_number(payload.get("comments")),
-        "duration": clean_text(payload.get("duration")) or "数据未填写",
+        "platform": clean_text(payload.get("platform")) or detect_platform_from_url(clean_text(payload.get("source_url"))),
+        "video_title": clean_text(payload.get("title")) or clean_text(video_info.get("video_title")) or "未填写",
+        "author_name": clean_text(payload.get("author_name")) or clean_text(video_info.get("author_name")) or "数据未填写",
+        "publish_time": clean_text(payload.get("publish_time")) or clean_text(video_info.get("publish_time")) or "数据未填写",
+        "duration": clean_text(payload.get("duration")) or clean_text(video_info.get("duration")) or "数据未填写",
+        "play_count": clean_number(payload.get("views")) if payload.get("views") not in {None, ""} else clean_text(video_info.get("play_count")) or "数据未填写",
+        "like_count": clean_number(payload.get("likes")) if payload.get("likes") not in {None, ""} else clean_text(video_info.get("like_count")) or "数据未填写",
+        "comment_count": clean_number(payload.get("comments")) if payload.get("comments") not in {None, ""} else clean_text(video_info.get("comment_count")) or "数据未填写",
+        "collect_count": clean_number(payload.get("collect_count")) if payload.get("collect_count") not in {None, ""} else clean_text(video_info.get("collect_count")) or "数据未填写",
+        "share_count": clean_number(payload.get("share_count")) if payload.get("share_count") not in {None, ""} else clean_text(video_info.get("share_count")) or "数据未填写",
+        "cover_info": "；".join(part for part in [
+            raw_cover_url and f"封面图 {raw_cover_url}",
+            raw_cover_description and f"封面描述 {raw_cover_description}",
+            clean_text(video_info.get("cover_info")),
+        ] if part) or "数据未填写",
+        "video_text": clean_text(payload.get("video_text")) or clean_text(video_info.get("video_text")) or "数据未填写",
+        "transcript": clean_text(payload.get("transcript")) or clean_text(video_info.get("transcript")) or raw_script or "数据未填写",
     }
     for key, value in list(analysis.items()):
         if isinstance(value, dict):
@@ -322,9 +627,9 @@ def generate_breakdown_analysis(settings, payload: dict[str, Any]) -> tuple[dict
                     value[sub_key] = clean_text(sub_value) or "数据未填写"
         elif isinstance(value, list):
             analysis[key] = clean_list(value)
-    analysis["score"]["explosive_potential"] = max(0, min(100, int(analysis["score"].get("explosive_potential") or 0)))
-    analysis["score"]["reuse_value"] = max(0, min(100, int(analysis["score"].get("reuse_value") or 0)))
-    analysis["score"]["difficulty"] = max(0, min(100, int(analysis["score"].get("difficulty") or 0)))
+    analysis["score"]["explosive_potential"] = max(0, min(100, _safe_int(analysis["score"].get("explosive_potential"))))
+    analysis["score"]["reuse_value"] = max(0, min(100, _safe_int(analysis["score"].get("reuse_value"))))
+    analysis["score"]["difficulty"] = max(0, min(100, _safe_int(analysis["score"].get("difficulty"))))
     markdown = build_breakdown_markdown(payload, analysis)
     if not markdown.strip():
         raise RuntimeError("未生成拆解结果，请重试。")
@@ -339,3 +644,4 @@ def normalize_breakdown_url(value: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return text
+

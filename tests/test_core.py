@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base
 from app.models import ContentDailyMetric, DailyAccountMetric, ImportBatch, PlatformAccount, User
 from app.services.importer import file_sha256, import_batch, parse_date, parse_number, read_table, suggest_mapping
-from app.services.breakdown import build_breakdown_markdown, normalize_breakdown_url
+from app.services.breakdown import build_breakdown_markdown, detect_platform_from_url, normalize_breakdown_url
 from app.services.metrics import comparison_groups, summarize_metrics
 from app.services.hotspots import normalize_payload
 from app.security import hash_password, verify_password
@@ -195,11 +195,19 @@ def test_breakdown_markdown_and_url_normalization():
         "score": {"explosive_potential": 90, "reuse_value": 88, "difficulty": 32, "overall_suggestion": "值得复用"},
         "video_info": {
             "video_url": "https://example.com/video",
+            "platform": "抖音",
             "video_title": "测试标题",
+            "author_name": "测试作者",
+            "publish_time": "2026-06-28 10:00",
             "play_count": "1,000",
             "like_count": "100",
             "comment_count": "10",
+            "collect_count": "5",
+            "share_count": "3",
             "duration": "30s",
+            "cover_info": "封面信息",
+            "video_text": "视频文案",
+            "transcript": "字幕文案",
         },
         "core_judgment": {
             "why": "结构清晰",
@@ -249,3 +257,9 @@ def test_breakdown_markdown_and_url_normalization():
     assert "# 爆款视频拆解报告" in markdown
     assert "## 8. 无人机足球账号可复用方案" in markdown
     assert normalize_breakdown_url("example.com/test").startswith("https://")
+
+
+def test_breakdown_platform_detection():
+    assert detect_platform_from_url("https://www.douyin.com/video/123") == "抖音"
+    assert detect_platform_from_url("https://www.xiaohongshu.com/explore/123") == "小红书"
+    assert detect_platform_from_url("https://channels.weixin.qq.com/s/abc") == "视频号"

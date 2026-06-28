@@ -92,6 +92,163 @@ document.querySelectorAll('[data-copy]').forEach((button) => {
   });
 });
 
+const viralShell = document.querySelector('[data-viral-shell]');
+if (viralShell) {
+  const sourceInput = viralShell.querySelector('[data-viral-source-url]');
+  const fetchStatusInput = viralShell.querySelector('[data-viral-field="fetch_status"]');
+  const fetchErrorInput = viralShell.querySelector('[data-viral-field="fetch_error"]');
+  const fetchStatusView = viralShell.querySelector('[data-viral-fetch-status]');
+  const fetchErrorBox = viralShell.querySelector('[data-viral-fetch-error]');
+  const fetchButton = viralShell.querySelector('[data-viral-fetch-button]');
+  const manualButton = viralShell.querySelector('[data-viral-manual-button]');
+  const step2 = viralShell.querySelector('[data-viral-step2]');
+  const analyzeForm = viralShell.querySelector('[data-viral-analyze-form]');
+  const analyzeButton = viralShell.querySelector('[data-viral-analyze-button]');
+  const resetButton = viralShell.querySelector('[data-viral-reset-button]');
+  const coverPreview = viralShell.querySelector('[data-viral-cover-preview]');
+  const coverImage = viralShell.querySelector('[data-viral-cover-image]');
+  const fieldNames = ['source_url', 'platform', 'title', 'cover_url', 'cover_description', 'author_name', 'publish_time', 'duration', 'views', 'likes', 'comments', 'collect_count', 'share_count', 'video_text', 'transcript', 'fetch_status', 'fetch_error'];
+  const fields = Object.fromEntries(fieldNames.map((name) => [name, viralShell.querySelector(`[data-viral-field="${name}"]`)].filter(Boolean)));
+
+  const setFetchMessage = (status, message) => {
+    if (fetchStatusView) fetchStatusView.value = status || '未抓取';
+    if (fetchStatusInput) fetchStatusInput.value = status || '未抓取';
+    if (fetchErrorInput) fetchErrorInput.value = message || '';
+    if (fetchErrorBox) {
+      fetchErrorBox.hidden = !message;
+      fetchErrorBox.textContent = message || '';
+    }
+  };
+
+  const populateFields = (payload, options = {}) => {
+    if (!payload) return;
+    const replaceEmptyOnly = Boolean(options.replaceEmptyOnly);
+    const numericFields = new Set(['views', 'likes', 'comments', 'collect_count', 'share_count']);
+    Object.entries(payload).forEach(([name, value]) => {
+      const field = fields[name];
+      if (!field) return;
+      let text = value === null || value === undefined ? '' : String(value);
+      if (numericFields.has(name)) {
+        text = text.replace(/,/g, '').replace(/，/g, '');
+        if (!text || text === '数据未填写') text = '0';
+      }
+      if (replaceEmptyOnly && field.value && field.value.trim()) return;
+      if (text || !replaceEmptyOnly) field.value = text;
+    });
+    if (coverPreview && coverImage) {
+      const coverUrl = String(payload.cover_url || '').trim();
+      if (coverUrl) {
+        coverImage.src = coverUrl;
+        coverPreview.hidden = false;
+      } else {
+        coverPreview.hidden = true;
+      }
+    }
+    if (step2) step2.hidden = false;
+  };
+
+  const setBusy = (busy) => {
+    if (fetchButton) fetchButton.disabled = busy;
+    if (analyzeButton) analyzeButton.disabled = busy;
+    if (resetButton) resetButton.disabled = busy;
+  };
+
+  if (sourceInput && fields.source_url) {
+    sourceInput.addEventListener('input', () => {
+      fields.source_url.value = sourceInput.value;
+    });
+  }
+
+  if (manualButton && step2) {
+    manualButton.addEventListener('click', () => {
+      step2.hidden = false;
+      flashNotice('已打开手动填写');
+      if (sourceInput) sourceInput.focus();
+    });
+  }
+
+  if (resetButton && analyzeForm && step2) {
+    resetButton.addEventListener('click', () => {
+      analyzeForm.reset();
+      setFetchMessage('未抓取', '');
+      if (coverPreview) coverPreview.hidden = true;
+      step2.hidden = true;
+      if (sourceInput) sourceInput.focus();
+    });
+  }
+
+  if (fetchButton && sourceInput) {
+    fetchButton.addEventListener('click', async () => {
+      const videoUrl = sourceInput.value.trim();
+      if (!videoUrl) {
+        flashNotice('请先输入视频链接');
+        sourceInput.focus();
+        return;
+      }
+      setBusy(true);
+      setFetchMessage('抓取中', '');
+      try {
+        const response = await fetch('/api/viral/fetch-video-info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ video_url: videoUrl }),
+        });
+        const payload = await response.json();
+        const data = payload.data || payload;
+        populateFields({ source_url: videoUrl, ...data }, { replaceEmptyOnly: !payload.ok });
+        if (payload.ok) {
+          setFetchMessage('抓取成功', '');
+          flashNotice('抓取成功');
+        } else {
+          const error = payload.fetch_error || '该平台可能限制自动抓取，请手动补充视频信息后继续拆解。';
+          setFetchMessage('抓取失败，可手动填写', error);
+          flashNotice(error);
+        }
+      } catch (_) {
+        const error = '该平台可能限制自动抓取，请手动补充视频信息后继续拆解。';
+        setFetchMessage('抓取失败，可手动填写', error);
+        flashNotice(error);
+      } finally {
+        setBusy(false);
+      }
+    });
+  }
+
+  if (analyzeForm) {
+    analyzeForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const formData = new FormData(analyzeForm);
+      const sourceUrl = String(formData.get('source_url') || sourceInput?.value || '').trim();
+      if (!sourceUrl) {
+        flashNotice('请先输入视频链接');
+        return;
+      }
+      const payload = Object.fromEntries(formData.entries());
+      payload.source_url = sourceUrl;
+      setBusy(true);
+      try {
+        const response = await fetch('/api/viral/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json();
+        if (!response.ok || result.error) {
+          flashNotice(result.error || '拆解失败');
+          if (result.id) window.location.href = `/breakdown/${result.id}`;
+          return;
+        }
+        flashNotice(result.message || '拆解任务已开始');
+        window.location.href = `/breakdown/${result.id}`;
+      } catch (_) {
+        flashNotice('拆解失败，请稍后重试');
+      } finally {
+        setBusy(false);
+      }
+    });
+  }
+}
+
 const breakdownDetail = document.querySelector('[data-breakdown-detail]');
 if (breakdownDetail) {
   const statusUrl = breakdownDetail.dataset.breakdownStatusUrl;
@@ -105,7 +262,7 @@ if (breakdownDetail) {
 
   const renderState = (payload) => {
     if (!payload) return;
-    if (statusPill) statusPill.textContent = payload.status || '未开始';
+    if (statusPill) statusPill.textContent = payload.analysis_status || payload.status || '未开始';
     if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, Number(payload.progress || 0)))}%`;
     if (progressText) progressText.textContent = `${Math.max(0, Math.min(100, Number(payload.progress || 0)))}%`;
     if (taskTip) {
@@ -135,7 +292,7 @@ if (breakdownDetail) {
       }
       const payload = await response.json();
       renderState(payload);
-      if (payload.status !== '分析中') stopPolling();
+      if ((payload.analysis_status || payload.status) !== '分析中') stopPolling();
     } catch (_) {
       stopPolling();
     }
