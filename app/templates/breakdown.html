@@ -45,7 +45,8 @@
       </div>
     </div>
     <div class="breakdown-form" data-viral-shell>
-      <div class="step-card">
+      <form class="step-card" method="post" action="/breakdown/actions/manual" data-viral-step1-form>
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
         <div class="step-card-head">
           <span class="step-badge">步骤 1</span>
           <div>
@@ -55,20 +56,20 @@
         </div>
         <div class="step-grid">
           <label>视频链接
-            <input name="source_url" data-viral-source-url placeholder="https://" required>
+            <input name="source_url" data-viral-source-url placeholder="https://" required value="{{ draft_breakdown.source_url if draft_breakdown else '' }}">
           </label>
           <label>抓取状态
-            <input value="未抓取" data-viral-fetch-status readonly>
+            <input value="{{ draft_breakdown.fetch_status if draft_breakdown else '未抓取' }}" data-viral-fetch-status readonly>
           </label>
         </div>
         <div class="action-row">
-          <button class="button primary" type="button" data-viral-fetch-button>自动抓取</button>
-          <button class="button secondary" type="button" data-viral-manual-button>直接手动填写</button>
+          <button class="button primary" type="submit" formaction="/breakdown/actions/fetch" data-viral-fetch-button>自动抓取</button>
+          <button class="button secondary" type="submit" data-viral-manual-button>直接手动填写</button>
         </div>
         <div class="breakdown-error" data-viral-fetch-error hidden></div>
-      </div>
+      </form>
 
-      <div class="step-card" data-viral-step2 hidden>
+      <div class="step-card" data-viral-step2 {% if not draft_step2_open %}hidden{% endif %}>
         <div class="step-card-head">
           <span class="step-badge">步骤 2</span>
           <div>
@@ -78,33 +79,31 @@
         </div>
         <form method="post" action="/breakdown/generate" class="breakdown-confirm-form" data-viral-analyze-form>
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          <input type="hidden" name="source_url" value="" data-viral-field="source_url">
-          <input type="hidden" name="fetch_status" value="未抓取" data-viral-field="fetch_status">
-          <input type="hidden" name="fetch_error" value="" data-viral-field="fetch_error">
+          <input type="hidden" name="source_url" value="{{ draft_breakdown.source_url if draft_breakdown else '' }}" data-viral-field="source_url">
+          <input type="hidden" name="fetch_status" value="{{ draft_breakdown.fetch_status if draft_breakdown else '未抓取' }}" data-viral-field="fetch_status">
+          <input type="hidden" name="fetch_error" value="{{ draft_breakdown.fetch_error if draft_breakdown else '' }}" data-viral-field="fetch_error">
           <div class="step-grid">
             <label>平台
               <select name="platform" data-viral-field="platform">
-                <option>抖音</option>
-                <option>小红书</option>
-                <option>视频号</option>
-                <option>公众号</option>
-                <option>其他</option>
+                {% for item in ['抖音','小红书','视频号','公众号','其他'] %}
+                <option {% if draft_breakdown and draft_breakdown.platform == item %}selected{% endif %}>{{ item }}</option>
+                {% endfor %}
               </select>
             </label>
             <label>标题
-              <input name="title" data-viral-field="title" placeholder="视频标题">
+              <input name="title" data-viral-field="title" placeholder="视频标题" value="{{ draft_breakdown.title if draft_breakdown else '' }}">
             </label>
             <label>作者昵称
-              <input name="author_name" data-viral-field="author_name" placeholder="作者昵称">
+              <input name="author_name" data-viral-field="author_name" placeholder="作者昵称" value="{{ draft_breakdown.author_name if draft_breakdown else '' }}">
             </label>
             <label>发布时间
-              <input name="publish_time" data-viral-field="publish_time" placeholder="2026-06-28 10:00">
+              <input name="publish_time" data-viral-field="publish_time" placeholder="2026-06-28 10:00" value="{{ draft_breakdown.publish_time if draft_breakdown else '' }}">
             </label>
             <label>视频时长
-              <input name="duration" data-viral-field="duration" placeholder="15s / 3min">
+              <input name="duration" data-viral-field="duration" placeholder="15s / 3min" value="{{ draft_breakdown.duration if draft_breakdown else '' }}">
             </label>
             <label>封面图链接
-              <input name="cover_url" data-viral-field="cover_url" placeholder="封面图链接">
+              <input name="cover_url" data-viral-field="cover_url" placeholder="封面图链接" value="{{ draft_breakdown.cover_url if draft_breakdown else '' }}">
             </label>
           </div>
           <div class="cover-preview" data-viral-cover-preview hidden>
@@ -112,20 +111,20 @@
             <p>封面预览</p>
           </div>
           <label>封面描述
-            <textarea name="cover_description" rows="3" data-viral-field="cover_description" placeholder="封面传达了什么"></textarea>
+            <textarea name="cover_description" rows="3" data-viral-field="cover_description" placeholder="封面传达了什么">{{ draft_breakdown.cover_description if draft_breakdown else '' }}</textarea>
           </label>
           <div class="field-grid">
-            <label>播放量<input name="views" type="number" step="1" min="0" value="0" data-viral-field="views"></label>
-            <label>点赞<input name="likes" type="number" step="1" min="0" value="0" data-viral-field="likes"></label>
-            <label>评论<input name="comments" type="number" step="1" min="0" value="0" data-viral-field="comments"></label>
-            <label>收藏<input name="collect_count" type="number" step="1" min="0" value="0" data-viral-field="collect_count"></label>
-            <label>转发<input name="share_count" type="number" step="1" min="0" value="0" data-viral-field="share_count"></label>
+            <label>播放量<input name="views" type="number" step="1" min="0" value="{{ draft_breakdown.views if draft_breakdown else 0 }}" data-viral-field="views"></label>
+            <label>点赞<input name="likes" type="number" step="1" min="0" value="{{ draft_breakdown.likes if draft_breakdown else 0 }}" data-viral-field="likes"></label>
+            <label>评论<input name="comments" type="number" step="1" min="0" value="{{ draft_breakdown.comments if draft_breakdown else 0 }}" data-viral-field="comments"></label>
+            <label>收藏<input name="collect_count" type="number" step="1" min="0" value="{{ draft_breakdown.collect_count if draft_breakdown else 0 }}" data-viral-field="collect_count"></label>
+            <label>转发<input name="share_count" type="number" step="1" min="0" value="{{ draft_breakdown.share_count if draft_breakdown else 0 }}" data-viral-field="share_count"></label>
           </div>
           <label>视频文案
-            <textarea name="video_text" rows="4" data-viral-field="video_text" placeholder="自动抓取不到时可手动粘贴"></textarea>
+            <textarea name="video_text" rows="4" data-viral-field="video_text" placeholder="自动抓取不到时可手动粘贴">{{ draft_breakdown.video_text if draft_breakdown else '' }}</textarea>
           </label>
           <label>字幕 / 脚本文案
-            <textarea name="transcript" rows="4" data-viral-field="transcript" placeholder="可直接粘贴字幕文本"></textarea>
+            <textarea name="transcript" rows="4" data-viral-field="transcript" placeholder="可直接粘贴字幕文本">{{ draft_breakdown.transcript if draft_breakdown else '' }}</textarea>
           </label>
           <div class="action-row">
             <button class="button primary" type="submit" data-viral-analyze-button>开始拆解</button>

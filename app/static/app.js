@@ -183,7 +183,8 @@ if (viralShell) {
   }
 
   if (manualButton && step2) {
-    manualButton.addEventListener('click', () => {
+    manualButton.addEventListener('click', (event) => {
+      event.preventDefault();
       console.log('manual button clicked');
       const videoUrl = String(sourceInput?.value || '').trim();
       if (!videoUrl) {
@@ -206,7 +207,8 @@ if (viralShell) {
   }
 
   if (fetchButton && sourceInput) {
-    fetchButton.addEventListener('click', async () => {
+    fetchButton.addEventListener('click', async (event) => {
+      event.preventDefault();
       console.log('fetch button clicked');
       const videoUrl = sourceInput.value.trim();
       if (!videoUrl) {

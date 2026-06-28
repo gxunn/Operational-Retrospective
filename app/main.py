@@ -1909,10 +1909,38 @@ def build_breakdown_overview(
     }
 
 
+def _breakdown_draft_payload(payload: dict[str, object] | None = None, *, step2_open: bool = True) -> dict[str, object]:
+    payload = payload or {}
+    return {
+        "source_url": str(payload.get("source_url") or ""),
+        "platform": str(payload.get("platform") or "其他"),
+        "title": str(payload.get("title") or ""),
+        "cover_url": str(payload.get("cover_url") or ""),
+        "cover_description": str(payload.get("cover_description") or ""),
+        "author_name": str(payload.get("author_name") or ""),
+        "publish_time": str(payload.get("publish_time") or ""),
+        "duration": str(payload.get("duration") or ""),
+        "views": float(payload.get("views") or 0),
+        "likes": float(payload.get("likes") or 0),
+        "comments": float(payload.get("comments") or 0),
+        "collect_count": float(payload.get("collect_count") or 0),
+        "share_count": float(payload.get("share_count") or 0),
+        "video_text": str(payload.get("video_text") or ""),
+        "transcript": str(payload.get("transcript") or ""),
+        "fetch_status": str(payload.get("fetch_status") or "未抓取"),
+        "fetch_error": str(payload.get("fetch_error") or ""),
+        "step2_open": step2_open,
+    }
+
+
 @app.get("/breakdown", response_class=HTMLResponse)
 def breakdown_page(request: Request, q: str = "", platform: str = "", sort_by: str = "created_at", order: str = "desc", page_no: int = 1):
     with SessionLocal() as db:
         context = build_breakdown_overview(db, q=q, platform=platform, sort_by=sort_by, order=order, page_no=page_no)
+        draft = request.session.get("breakdown_draft")
+        if isinstance(draft, dict):
+            context["draft_breakdown"] = draft
+            context["draft_step2_open"] = bool(draft.get("step2_open"))
         return page(request, "breakdown.html", db, **context)
 
 
@@ -1922,6 +1950,10 @@ def breakdown_detail(request: Request, breakdown_id: int, q: str = "", platform:
         if not db.get(VideoBreakdown, breakdown_id):
             return redirect("/breakdown", "案例不存在")
         context = build_breakdown_overview(db, q=q, platform=platform, sort_by=sort_by, order=order, page_no=page_no, selected_case_id=breakdown_id)
+        draft = request.session.get("breakdown_draft")
+        if isinstance(draft, dict):
+            context["draft_breakdown"] = draft
+            context["draft_step2_open"] = bool(draft.get("step2_open"))
         return page(request, "breakdown.html", db, **context)
 
 
@@ -2196,6 +2228,42 @@ async def api_fetch_video_info(request: Request):
         return JSONResponse({"ok": True, **result.get("data", {}), "fetch_status": "抓取成功", "fetch_error": ""})
 
 
+@app.post("/breakdown/actions/manual")
+def breakdown_manual(request: Request, source_url: str = Form(""), csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = current_actor(request, db)
+        if not can(actor, "use_breakdown"):
+            return redirect("/breakdown", "没有权限")
+        draft = _breakdown_draft_payload({"source_url": source_url}, step2_open=True)
+        request.session["breakdown_draft"] = draft
+        return redirect("/breakdown", "已切换到手动填写")
+
+
+@app.post("/breakdown/actions/fetch")
+def breakdown_fetch(request: Request, source_url: str = Form(""), csrf: str = Form()):
+    verify_csrf(request, csrf)
+    with SessionLocal() as db:
+        actor = current_actor(request, db)
+        if not can(actor, "use_breakdown"):
+            return redirect("/breakdown", "没有权限")
+        normalized_url = normalize_breakdown_url(source_url)
+        if not normalized_url:
+            request.session["breakdown_draft"] = _breakdown_draft_payload({"source_url": ""}, step2_open=True)
+            return redirect("/breakdown", "请先输入视频链接")
+        result = fetch_video_info(normalized_url)
+        if not result.get("ok"):
+            error = str(result.get("error") or "该平台可能限制自动抓取，请手动补充视频信息后继续拆解。")
+            draft_data = dict(result.get("data") or {})
+            draft_data.update({"source_url": normalized_url, "fetch_status": "抓取失败", "fetch_error": error})
+            request.session["breakdown_draft"] = _breakdown_draft_payload(draft_data, step2_open=True)
+            return redirect("/breakdown", error)
+        draft_data = dict(result.get("data") or {})
+        draft_data.update({"source_url": normalized_url, "fetch_status": "抓取成功", "fetch_error": ""})
+        request.session["breakdown_draft"] = _breakdown_draft_payload(draft_data, step2_open=True)
+        return redirect("/breakdown", "抓取成功，已自动填充基础信息")
+
+
 @app.get("/api/viral/list")
 def api_viral_list(request: Request, q: str = "", platform: str = "", page: int = 1, page_size: int = 20):
     with SessionLocal() as db:
@@ -2357,6 +2425,7 @@ def generate_breakdown(
         actor = current_actor(request, db)
         if not can(actor, "use_breakdown"):
             return redirect("/breakdown", "没有权限")
+        request.session.pop("breakdown_draft", None)
         normalized = _breakdown_payload_from_input(
             {
                 "source_url": source_url,
