@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -177,61 +178,82 @@ def diagnostics_status(db: Session) -> dict[str, str]:
 
 
 def initialize() -> None:
+    if os.getenv("RAILWAY_PROJECT_ID") and str(settings.database_url).startswith("sqlite"):
+        raise RuntimeError("Railway 生产环境禁止使用 SQLite，请将 DATABASE_URL 配置为 Railway Postgres。")
     with engine.begin() as conn:
         tables = set(inspect(conn).get_table_names())
+        dialect = conn.dialect.name
 
         for table in Base.metadata.sorted_tables:
             if table.name not in tables:
                 table.create(conn, checkfirst=True)
         tables = set(inspect(conn).get_table_names())
 
-        def add_column(table: str, name: str, ddl: str) -> None:
+        ddl_by_dialect = {
+            "sqlite": {
+                "datetime": "DATETIME",
+                "integer": "INTEGER",
+                "boolean": "BOOLEAN",
+                "float": "FLOAT",
+                "text": "TEXT",
+            },
+            "postgresql": {
+                "datetime": "TIMESTAMP",
+                "integer": "INTEGER",
+                "boolean": "BOOLEAN",
+                "float": "DOUBLE PRECISION",
+                "text": "TEXT",
+            },
+        }
+        ddl_types = ddl_by_dialect.get(dialect, ddl_by_dialect["sqlite"])
+
+        def add_column(table: str, name: str, definition: str) -> None:
             if table not in tables:
                 return
             columns = {column["name"] for column in inspect(conn).get_columns(table)}
             if name not in columns:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {definition}"))
 
-        add_column("users", "deleted_at", "deleted_at DATETIME")
-        add_column("users", "deleted_by", "deleted_by INTEGER")
-        add_column("users", "updated_at", "updated_at DATETIME")
-        add_column("platform_accounts", "last_synced_at", "last_synced_at DATETIME")
-        add_column("platform_accounts", "deleted_at", "deleted_at DATETIME")
-        add_column("platform_accounts", "deleted_by", "deleted_by INTEGER")
+        add_column("users", "deleted_at", f"deleted_at {ddl_types['datetime']}")
+        add_column("users", "deleted_by", f"deleted_by {ddl_types['integer']}")
+        add_column("users", "updated_at", f"updated_at {ddl_types['datetime']}")
+        add_column("platform_accounts", "last_synced_at", f"last_synced_at {ddl_types['datetime']}")
+        add_column("platform_accounts", "deleted_at", f"deleted_at {ddl_types['datetime']}")
+        add_column("platform_accounts", "deleted_by", f"deleted_by {ddl_types['integer']}")
         add_column("platform_accounts", "manager_name", "manager_name VARCHAR(80) DEFAULT ''")
         add_column("platform_accounts", "business_type", "business_type VARCHAR(80) DEFAULT ''")
         add_column("platform_accounts", "positioning", "positioning VARCHAR(255) DEFAULT ''")
         add_column("platform_accounts", "data_source", "data_source VARCHAR(30) DEFAULT 'manual'")
-        add_column("platform_accounts", "updated_at", "updated_at DATETIME")
-        add_column("import_batches", "deleted_at", "deleted_at DATETIME")
-        add_column("import_batches", "deleted_by", "deleted_by INTEGER")
-        add_column("import_batches", "updated_at", "updated_at DATETIME")
+        add_column("platform_accounts", "updated_at", f"updated_at {ddl_types['datetime']}")
+        add_column("import_batches", "deleted_at", f"deleted_at {ddl_types['datetime']}")
+        add_column("import_batches", "deleted_by", f"deleted_by {ddl_types['integer']}")
+        add_column("import_batches", "updated_at", f"updated_at {ddl_types['datetime']}")
         add_column("reports", "title", "title VARCHAR(200) DEFAULT ''")
         add_column("reports", "report_type", "report_type VARCHAR(20) DEFAULT 'daily'")
-        add_column("reports", "deleted_at", "deleted_at DATETIME")
-        add_column("reports", "deleted_by", "deleted_by INTEGER")
-        add_column("topic_ideas", "is_favorite", "is_favorite BOOLEAN DEFAULT 0")
-        add_column("topic_ideas", "updated_at", "updated_at DATETIME")
+        add_column("reports", "deleted_at", f"deleted_at {ddl_types['datetime']}")
+        add_column("reports", "deleted_by", f"deleted_by {ddl_types['integer']}")
+        add_column("topic_ideas", "is_favorite", f"is_favorite {ddl_types['boolean']} DEFAULT FALSE")
+        add_column("topic_ideas", "updated_at", f"updated_at {ddl_types['datetime']}")
         add_column("topic_ideas", "status", "status VARCHAR(20) DEFAULT '待拍摄'")
         add_column("topic_ideas", "owner_name", "owner_name VARCHAR(80) DEFAULT ''")
-        add_column("email_recipients", "tags_json", "tags_json TEXT DEFAULT '[]'")
-        add_column("content_daily_metrics", "private_messages", "private_messages FLOAT DEFAULT 0")
-        add_column("content_daily_metrics", "conversion_note", "conversion_note TEXT DEFAULT ''")
-        add_column("video_breakdowns", "analysis_markdown", "analysis_markdown TEXT DEFAULT ''")
+        add_column("email_recipients", "tags_json", f"tags_json {ddl_types['text']} DEFAULT '[]'")
+        add_column("content_daily_metrics", "private_messages", f"private_messages {ddl_types['float']} DEFAULT 0")
+        add_column("content_daily_metrics", "conversion_note", f"conversion_note {ddl_types['text']} DEFAULT ''")
+        add_column("video_breakdowns", "analysis_markdown", f"analysis_markdown {ddl_types['text']} DEFAULT ''")
         add_column("video_breakdowns", "analysis_status", "analysis_status VARCHAR(20) DEFAULT '未开始'")
         add_column("video_breakdowns", "status", "status VARCHAR(20) DEFAULT '未开始'")
-        add_column("video_breakdowns", "progress", "progress INTEGER DEFAULT 0")
+        add_column("video_breakdowns", "progress", f"progress {ddl_types['integer']} DEFAULT 0")
         add_column("video_breakdowns", "cover_url", "cover_url VARCHAR(500) DEFAULT ''")
         add_column("video_breakdowns", "author_name", "author_name VARCHAR(120) DEFAULT ''")
         add_column("video_breakdowns", "publish_time", "publish_time VARCHAR(50) DEFAULT ''")
-        add_column("video_breakdowns", "collect_count", "collect_count FLOAT DEFAULT 0")
-        add_column("video_breakdowns", "share_count", "share_count FLOAT DEFAULT 0")
-        add_column("video_breakdowns", "video_text", "video_text TEXT DEFAULT ''")
-        add_column("video_breakdowns", "transcript", "transcript TEXT DEFAULT ''")
+        add_column("video_breakdowns", "collect_count", f"collect_count {ddl_types['float']} DEFAULT 0")
+        add_column("video_breakdowns", "share_count", f"share_count {ddl_types['float']} DEFAULT 0")
+        add_column("video_breakdowns", "video_text", f"video_text {ddl_types['text']} DEFAULT ''")
+        add_column("video_breakdowns", "transcript", f"transcript {ddl_types['text']} DEFAULT ''")
         add_column("video_breakdowns", "fetch_status", "fetch_status VARCHAR(20) DEFAULT '未抓取'")
-        add_column("video_breakdowns", "fetch_error", "fetch_error TEXT DEFAULT ''")
-        add_column("video_breakdowns", "error_message", "error_message TEXT DEFAULT ''")
-        add_column("video_breakdowns", "updated_at", "updated_at DATETIME")
+        add_column("video_breakdowns", "fetch_error", f"fetch_error {ddl_types['text']} DEFAULT ''")
+        add_column("video_breakdowns", "error_message", f"error_message {ddl_types['text']} DEFAULT ''")
+        add_column("video_breakdowns", "updated_at", f"updated_at {ddl_types['datetime']}")
 
         breakdown_rows = conn.execute(text("SELECT id, analysis_json, analysis_markdown, status, analysis_status, progress, error_message FROM video_breakdowns")).mappings().all()
         for row in breakdown_rows:
@@ -267,7 +289,8 @@ def initialize() -> None:
     for folder in (storage_dir, storage_dir / "uploads", storage_dir / "reports"):
         folder.mkdir(parents=True, exist_ok=True)
     with SessionLocal() as db:
-        if not db.scalar(select(User).where(User.username == settings.admin_username)):
+        total_users = db.scalar(select(func.count()).select_from(User)) or 0
+        if total_users == 0:
             db.add(
                 User(
                     username=settings.admin_username,
