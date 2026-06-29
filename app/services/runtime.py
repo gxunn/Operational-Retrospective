@@ -114,16 +114,23 @@ def set_json_setting(db: Session, key: str, value: Any, secret: bool = False) ->
 
 def runtime_settings(db: Session):
     data = settings.model_dump()
+    def safe_int_setting(key: str, default: int) -> int:
+        raw = get_setting(db, key, str(default))
+        try:
+            return int(raw)
+        except Exception:
+            return default
+
     overrides = {
         "openai_api_key": get_setting(db, "openai_api_key", data["openai_api_key"], secret=True),
         "openai_model": get_setting(db, "openai_model", data["openai_model"]),
         "app_timezone": get_setting(db, "app_timezone", data["app_timezone"]),
-        "report_hour": int(get_setting(db, "report_hour", str(data["report_hour"]))),
-        "report_minute": int(get_setting(db, "report_minute", str(data["report_minute"]))),
-        "hotspot_hour": int(get_setting(db, "hotspot_hour", str(data["hotspot_hour"]))),
-        "hotspot_minute": int(get_setting(db, "hotspot_minute", str(data["hotspot_minute"]))),
+        "report_hour": safe_int_setting("report_hour", data["report_hour"]),
+        "report_minute": safe_int_setting("report_minute", data["report_minute"]),
+        "hotspot_hour": safe_int_setting("hotspot_hour", data["hotspot_hour"]),
+        "hotspot_minute": safe_int_setting("hotspot_minute", data["hotspot_minute"]),
         "smtp_host": get_setting(db, "smtp_host", data["smtp_host"]),
-        "smtp_port": int(get_setting(db, "smtp_port", str(data["smtp_port"]))),
+        "smtp_port": safe_int_setting("smtp_port", data["smtp_port"]),
         "smtp_username": get_setting(db, "smtp_username", data["smtp_username"]),
         "smtp_password": get_setting(db, "smtp_password", data["smtp_password"], secret=True),
         "smtp_use_ssl": get_setting(db, "smtp_use_ssl", str(data["smtp_use_ssl"])) in {"1", "true", "True", "yes", "on"},

@@ -28,6 +28,21 @@
     </div>
   </section>
   <section class="panel">
+    <h2>系统诊断</h2>
+    <div class="config-list">
+      <div><span>网站状态</span><strong class="{{ 'positive' if diagnostics.site == 'ok' else 'negative' }}">{{ diagnostics.site }}</strong></div>
+      <div><span>数据库状态</span><strong class="{{ 'positive' if diagnostics.database == 'connected' else 'negative' }}">{{ diagnostics.database }}</strong></div>
+      <div><span>OpenAI 配置</span><strong class="{{ 'positive' if diagnostics.openai == 'configured' else 'negative' }}">{{ diagnostics.openai }}</strong></div>
+      <div><span>当前版本</span><strong>{{ diagnostics.version }}</strong></div>
+      <div><span>最近一次错误</span><strong>{{ diagnostics.last_error or '暂无' }}</strong></div>
+      <div><span>错误时间</span><strong>{{ diagnostics.last_error_time or '暂无' }}</strong></div>
+      <div><span>错误位置</span><strong>{{ diagnostics.last_error_path or '暂无' }}</strong></div>
+      <div><span>最近一次上传</span><strong>{{ latest_upload.file }} · {{ latest_upload.status }}</strong></div>
+      <div><span>上传时间</span><strong>{{ latest_upload.time or '暂无' }}</strong></div>
+      <div><span>上传说明</span><strong>{{ latest_upload.message or '暂无' }}</strong></div>
+    </div>
+  </section>
+  <section class="panel">
     <h2>修改我的密码</h2>
     <form method="post" action="/users/password" class="stack-form">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">

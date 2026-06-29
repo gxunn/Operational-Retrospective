@@ -175,6 +175,75 @@ def test_metric_range_summary_and_comparison_groups():
     assert [row.account.platform for row in groups[0]["rows"]] == ["小红书", "抖音"]
 
 
+def test_import_batch_skips_invalid_rows_and_keeps_valid_rows(tmp_path: Path):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    path = tmp_path / "mixed.csv"
+    pd.DataFrame(
+        [
+            {"日期": "2026-06-21", "播放量": "100", "点赞": "10"},
+            {"日期": "不是日期", "播放量": "200", "点赞": "20"},
+            {"日期": "2026-06-22", "播放量": None, "点赞": "5"},
+        ]
+    ).to_csv(path, index=False, encoding="utf-8-sig")
+    with Session() as db:
+        user = User(username="tester", password_hash="unused", role="admin")
+        account = PlatformAccount(platform="抖音", name="稳定性测试账号")
+        db.add_all([user, account])
+        db.flush()
+        batch = ImportBatch(
+            account_id=account.id,
+            uploaded_by=user.id,
+            original_filename=path.name,
+            stored_path=str(path),
+            file_hash=file_sha256(path),
+        )
+        db.add(batch)
+        db.flush()
+        mapping = suggest_mapping(list(read_table(path).columns))
+        count = import_batch(db, batch, mapping)
+        db.commit()
+        assert count == 2
+        assert "无法识别日期" in batch.error_message
+        assert db.query(DailyAccountMetric).count() == 2
+
+
+def test_content_import_reuses_existing_daily_metric(tmp_path: Path):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    path = tmp_path / "content-dup.csv"
+    pd.DataFrame(
+        [
+            {"发布时间": "2026-06-21 10:00:00", "作品名称": "第一条", "播放量": 1000, "点赞": 10, "评论": 1, "收藏": 2, "转发": 3},
+            {"发布时间": "2026-06-21 18:00:00", "作品名称": "第二条", "播放量": 2000, "点赞": 20, "评论": 2, "收藏": 3, "转发": 4},
+        ]
+    ).to_csv(path, index=False, encoding="utf-8-sig")
+    with Session() as db:
+        user = User(username="tester", password_hash="unused", role="admin")
+        account = PlatformAccount(platform="小红书", name="内容汇总测试账号")
+        existing_daily = DailyAccountMetric(account=account, metric_date=date(2026, 6, 21), views=500, likes=5)
+        db.add_all([user, account, existing_daily])
+        db.flush()
+        batch = ImportBatch(
+            account_id=account.id,
+            uploaded_by=user.id,
+            original_filename=path.name,
+            stored_path=str(path),
+            file_hash=file_sha256(path),
+        )
+        db.add(batch)
+        db.flush()
+        mapping = suggest_mapping(list(read_table(path).columns))
+        count = import_batch(db, batch, mapping)
+        db.commit()
+        daily = db.query(DailyAccountMetric).filter_by(account_id=account.id, metric_date=date(2026, 6, 21)).one()
+        assert count == 2
+        assert db.query(DailyAccountMetric).count() == 1
+        assert daily.views == 3000
+
+
 def test_hotspot_payload_normalization_filters_unsafe_urls():
     payload = normalize_payload(
         {

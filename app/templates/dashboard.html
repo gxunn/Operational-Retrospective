@@ -89,7 +89,7 @@
     {% for item in anomalies %}
     <article class="alert-card">
       <h3>{{ item.account }} · {{ '播放量' if item.metric == 'views' else '涨粉' }}</h3>
-      <p>当前值 {{ '{:,.0f}'.format(item.current) }}，对比值 {{ '{:,.0f}'.format(item.current / (1 + item.change / 100)) if item.change else '{:,.0f}'.format(item.current) }}，变化幅度 {{ '{:.1f}'.format(item.change|abs) }}% {{ '上升' if item.change > 0 else '下降' }}</p>
+      <p>当前值 {{ '{:,.0f}'.format(item.current) }}，对比值 {{ '{:,.0f}'.format(item.baseline) if item.baseline is not none else '0' }}，变化幅度 {{ '{:.1f}'.format(item.change|abs) }}% {{ '上升' if item.change > 0 else '下降' }}</p>
       <p class="suggestion">建议：{{ item.suggestion }}</p>
     </article>
     {% else %}

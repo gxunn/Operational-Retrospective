@@ -11,6 +11,13 @@ def _avg(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def _safe_number(value) -> float:
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
 def detect_anomalies(db: Session, target: date) -> list[dict]:
     rows = db.scalars(
         select(DailyAccountMetric).where(
@@ -30,8 +37,8 @@ def detect_anomalies(db: Session, target: date) -> list[dict]:
         if not today or len(history) < 3:
             continue
         for field in ("views", "followers_new"):
-            baseline = _avg([getattr(item, field) for item in history])
-            current = getattr(today, field)
+            baseline = _avg([_safe_number(getattr(item, field, 0)) for item in history])
+            current = _safe_number(getattr(today, field, 0))
             if baseline <= 0:
                 continue
             change = (current - baseline) / baseline * 100
@@ -58,9 +65,11 @@ def detect_anomalies(db: Session, target: date) -> list[dict]:
 def forecast_trend(values: list[tuple[date, float]]) -> dict:
     if len(values) < 2:
         return {"next": 0, "trend": "数据不足"}
-    ordered = sorted(values, key=lambda item: item[0])
+    ordered = sorted((item for item in values if item and item[0] is not None), key=lambda item: item[0])
+    if len(ordered) < 2:
+        return {"next": 0, "trend": "数据不足"}
     xs = list(range(len(ordered)))
-    ys = [item[1] for item in ordered]
+    ys = [_safe_number(item[1]) for item in ordered]
     x_mean = sum(xs) / len(xs)
     y_mean = sum(ys) / len(ys)
     numerator = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys))
@@ -76,4 +85,3 @@ def explain_forecast(field: str, forecast: dict) -> str:
         return "历史数据不足，暂时无法给出可靠预测。"
     label = "播放量" if field == "views" else "涨粉"
     return f"{label}趋势{forecast['trend']}，按当前斜率推算下一期约为 {forecast['next']:,.0f}。"
-

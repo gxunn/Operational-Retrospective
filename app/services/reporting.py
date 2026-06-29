@@ -28,9 +28,24 @@ LABELS = {
 }
 
 
+def _safe_number(value) -> float:
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+def _safe_text(value, fallback: str = "") -> str:
+    text = "" if value is None else str(value).strip()
+    return text or fallback
+
+
 def _totals(db: Session, target: date) -> dict[str, float]:
-    rows = db.scalars(select(DailyAccountMetric).where(DailyAccountMetric.metric_date == target)).all()
-    return {field: sum(getattr(row, field) for row in rows) for field in METRICS}
+    try:
+        rows = db.scalars(select(DailyAccountMetric).where(DailyAccountMetric.metric_date == target)).all()
+    except Exception:
+        return {field: 0.0 for field in METRICS}
+    return {field: sum(_safe_number(getattr(row, field, 0)) for row in rows) for field in METRICS}
 
 
 def latest_data_date(db: Session) -> date | None:
@@ -48,15 +63,22 @@ def report_stats(db: Session, target: date) -> dict:
         for field in METRICS
     }
 
-    active_accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.is_active.is_(True))).all()
-    present_ids = set(
-        db.scalars(select(DailyAccountMetric.account_id).where(DailyAccountMetric.metric_date == target)).all()
-    )
-    missing = [f"{account.platform} · {account.name}" for account in active_accounts if account.id not in present_ids]
+    try:
+        active_accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.is_active.is_(True))).all()
+        present_ids = set(
+            db.scalars(select(DailyAccountMetric.account_id).where(DailyAccountMetric.metric_date == target)).all()
+        )
+        missing = [f"{_safe_text(account.platform, '未填写')} · {_safe_text(account.name, '未命名账号')}" for account in active_accounts if account.id not in present_ids]
+    except Exception:
+        active_accounts = []
+        missing = []
 
-    contents = db.scalars(
-        select(ContentDailyMetric).where(ContentDailyMetric.metric_date == target).order_by(ContentDailyMetric.views.desc())
-    ).all()
+    try:
+        contents = db.scalars(
+            select(ContentDailyMetric).where(ContentDailyMetric.metric_date == target).order_by(ContentDailyMetric.views.desc())
+        ).all()
+    except Exception:
+        contents = []
     by_account: dict[int, list] = defaultdict(list)
     for content in contents:
         by_account[content.account_id].append(content)
@@ -69,7 +91,15 @@ def report_stats(db: Session, target: date) -> dict:
             continue
 
         def rate(row):
-            return (row.likes + row.comments + row.favorites + row.shares) / row.views
+            views = _safe_number(getattr(row, "views", 0))
+            if views <= 0:
+                return 0.0
+            return (
+                _safe_number(getattr(row, "likes", 0))
+                + _safe_number(getattr(row, "comments", 0))
+                + _safe_number(getattr(row, "favorites", 0))
+                + _safe_number(getattr(row, "shares", 0))
+            ) / views
 
         highest_views = max(valid, key=lambda row: row.views)
         best = max(valid, key=rate)
@@ -77,10 +107,10 @@ def report_stats(db: Session, target: date) -> dict:
         account = accounts.get(account_id) or rows[0].account
         rankings.append(
             {
-                "account": f"{account.platform} · {account.name}",
-                "highest_views": {"title": highest_views.title, "views": highest_views.views},
-                "best": {"title": best.title, "rate": rate(best)},
-                "worst": {"title": worst.title, "rate": rate(worst)},
+                "account": f"{_safe_text(getattr(account, 'platform', ''), '未填写')} · {_safe_text(getattr(account, 'name', ''), '未命名账号')}",
+                "highest_views": {"title": _safe_text(highest_views.title, "未命名内容"), "views": _safe_number(highest_views.views)},
+                "best": {"title": _safe_text(best.title, "未命名内容"), "rate": rate(best)},
+                "worst": {"title": _safe_text(worst.title, "未命名内容"), "rate": rate(worst)},
             }
         )
 
@@ -96,27 +126,33 @@ def report_stats(db: Session, target: date) -> dict:
 
 
 def summary_stats(db: Session, start_date: date, end_date: date) -> dict:
-    rows = db.scalars(
-        select(DailyAccountMetric).where(
-            DailyAccountMetric.metric_date >= start_date,
-            DailyAccountMetric.metric_date <= end_date,
-        )
-    ).all()
-    current = {field: sum(getattr(row, field) for row in rows) for field in METRICS}
+    try:
+        rows = db.scalars(
+            select(DailyAccountMetric).where(
+                DailyAccountMetric.metric_date >= start_date,
+                DailyAccountMetric.metric_date <= end_date,
+            )
+        ).all()
+    except Exception:
+        rows = []
+    current = {field: sum(_safe_number(getattr(row, field, 0)) for row in rows) for field in METRICS}
     days = max((end_date - start_date).days + 1, 1)
     averages = {field: current[field] / days for field in METRICS}
-    contents = db.scalars(
-        select(ContentDailyMetric)
-        .where(ContentDailyMetric.metric_date >= start_date, ContentDailyMetric.metric_date <= end_date)
-        .order_by(ContentDailyMetric.views.desc())
-        .limit(10)
-    ).all()
+    try:
+        contents = db.scalars(
+            select(ContentDailyMetric)
+            .where(ContentDailyMetric.metric_date >= start_date, ContentDailyMetric.metric_date <= end_date)
+            .order_by(ContentDailyMetric.views.desc())
+            .limit(10)
+        ).all()
+    except Exception:
+        contents = []
     rankings = [
         {
-            "account": f"{item.account.platform} · {item.account.name}",
-            "highest_views": {"title": item.title, "views": item.views},
-            "best": {"title": item.title, "rate": ((item.likes + item.comments + item.favorites + item.shares) / item.views) if item.views else 0},
-            "worst": {"title": item.title, "rate": ((item.likes + item.comments + item.favorites + item.shares) / item.views) if item.views else 0},
+            "account": f"{_safe_text(getattr(getattr(item, 'account', None), 'platform', ''), '未填写')} · {_safe_text(getattr(getattr(item, 'account', None), 'name', ''), '未命名账号')}",
+            "highest_views": {"title": _safe_text(item.title, '未命名内容'), "views": _safe_number(item.views)},
+            "best": {"title": _safe_text(item.title, '未命名内容'), "rate": ((_safe_number(item.likes) + _safe_number(item.comments) + _safe_number(item.favorites) + _safe_number(item.shares)) / _safe_number(item.views)) if _safe_number(item.views) else 0},
+            "worst": {"title": _safe_text(item.title, '未命名内容'), "rate": ((_safe_number(item.likes) + _safe_number(item.comments) + _safe_number(item.favorites) + _safe_number(item.shares)) / _safe_number(item.views)) if _safe_number(item.views) else 0},
         }
         for item in contents
     ]

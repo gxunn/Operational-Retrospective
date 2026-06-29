@@ -269,78 +269,100 @@ def import_batch(db: Session, batch: ImportBatch, mapping: dict[str, str]) -> in
     content_cache: dict[tuple[date, str], ContentDailyMetric] = {}
     daily_cache: dict[date, DailyAccountMetric] = {}
 
-    for _, row in frame.iterrows():
-        metric_date = parse_date(row[mapping["date"]])
-        dates.append(metric_date)
-        values = {field: parse_number(row[mapping[field]]) if mapping.get(field) else 0.0 for field in metrics}
+    row_errors: list[str] = []
+    for row_index, row in frame.iterrows():
+        try:
+            metric_date = parse_date(row[mapping["date"]])
+            values = {field: parse_number(row[mapping[field]]) if mapping.get(field) else 0.0 for field in metrics}
+        except Exception as exc:
+            row_errors.append(f"第 {row_index + 2} 行：{exc}")
+            continue
 
-        if has_content:
-            title = str(row[mapping["title"]]).strip()
-            if not title or title.lower() == "nan":
-                continue
-            raw_key = str(row[mapping["content_id"]]).strip() if mapping.get("content_id") else title
-            content_key = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:64]
-            cache_key = (metric_date, content_key)
-            content = content_cache.get(cache_key)
-            if not content:
-                content = db.scalar(
-                    select(ContentDailyMetric).where(
-                        ContentDailyMetric.account_id == batch.account_id,
-                        ContentDailyMetric.metric_date == metric_date,
-                        ContentDailyMetric.content_key == content_key,
+        dates.append(metric_date)
+
+        try:
+            if has_content:
+                title = str(row[mapping["title"]]).strip()
+                if not title or title.lower() == "nan":
+                    row_errors.append(f"第 {row_index + 2} 行：内容标题为空")
+                    continue
+                raw_key = str(row[mapping["content_id"]]).strip() if mapping.get("content_id") else title
+                content_key = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:64]
+                cache_key = (metric_date, content_key)
+                content = content_cache.get(cache_key)
+                if not content:
+                    content = db.scalar(
+                        select(ContentDailyMetric).where(
+                            ContentDailyMetric.account_id == batch.account_id,
+                            ContentDailyMetric.metric_date == metric_date,
+                            ContentDailyMetric.content_key == content_key,
+                        )
                     )
-                )
-            if not content:
-                content = ContentDailyMetric(
-                    account_id=batch.account_id,
-                    metric_date=metric_date,
-                    content_key=content_key,
-                    title=title[:500],
-                )
-                db.add(content)
-            content_cache[cache_key] = content
-            content.title = title[:500]
-            content.source_batch_id = batch.id
-            for field in metrics[1:]:
-                setattr(content, field, values[field])
-        else:
-            daily = daily_cache.get(metric_date)
-            if not daily:
-                daily = db.scalar(
-                    select(DailyAccountMetric).where(
-                        DailyAccountMetric.account_id == batch.account_id,
-                        DailyAccountMetric.metric_date == metric_date,
+                if not content:
+                    content = ContentDailyMetric(
+                        account_id=batch.account_id,
+                        metric_date=metric_date,
+                        content_key=content_key,
+                        title=title[:500],
                     )
-                )
-            if not daily:
-                daily = DailyAccountMetric(account_id=batch.account_id, metric_date=metric_date)
-                db.add(daily)
-            daily_cache[metric_date] = daily
-            daily.source_batch_id = batch.id
-            for field in metrics:
-                setattr(daily, field, values[field])
-        imported += 1
+                    db.add(content)
+                content_cache[cache_key] = content
+                content.title = title[:500]
+                content.source_batch_id = batch.id
+                for field in metrics[1:]:
+                    setattr(content, field, values[field])
+            else:
+                daily = daily_cache.get(metric_date)
+                if not daily:
+                    daily = db.scalar(
+                        select(DailyAccountMetric).where(
+                            DailyAccountMetric.account_id == batch.account_id,
+                            DailyAccountMetric.metric_date == metric_date,
+                        )
+                    )
+                if not daily:
+                    daily = DailyAccountMetric(account_id=batch.account_id, metric_date=metric_date)
+                    db.add(daily)
+                daily_cache[metric_date] = daily
+                daily.source_batch_id = batch.id
+                for field in metrics:
+                    setattr(daily, field, values[field])
+            imported += 1
+        except Exception as exc:
+            row_errors.append(f"第 {row_index + 2} 行：{exc}")
+            continue
 
     if has_content:
         db.flush()
         for metric_date in sorted(set(dates)):
-            rows = db.scalars(
-                select(ContentDailyMetric).where(
-                    ContentDailyMetric.account_id == batch.account_id,
-                    ContentDailyMetric.metric_date == metric_date,
-                )
-            ).all()
-            daily = db.scalar(
-                select(DailyAccountMetric).where(
-                    DailyAccountMetric.account_id == batch.account_id,
-                    DailyAccountMetric.metric_date == metric_date,
-                )
-            ) or DailyAccountMetric(account_id=batch.account_id, metric_date=metric_date)
-            if daily.id is None:
-                db.add(daily)
-            daily.source_batch_id = batch.id
-            for field in metrics[1:]:
-                setattr(daily, field, sum(getattr(item, field) for item in rows))
+            try:
+                rows = db.scalars(
+                    select(ContentDailyMetric).where(
+                        ContentDailyMetric.account_id == batch.account_id,
+                        ContentDailyMetric.metric_date == metric_date,
+                    )
+                ).all()
+                daily = daily_cache.get(metric_date)
+                if not daily:
+                    daily = db.scalar(
+                        select(DailyAccountMetric).where(
+                            DailyAccountMetric.account_id == batch.account_id,
+                            DailyAccountMetric.metric_date == metric_date,
+                        )
+                    )
+                if not daily:
+                    daily = DailyAccountMetric(account_id=batch.account_id, metric_date=metric_date)
+                    db.add(daily)
+                daily_cache[metric_date] = daily
+                daily.source_batch_id = batch.id
+                for field in metrics[1:]:
+                    setattr(daily, field, sum(getattr(item, field) for item in rows))
+            except Exception as exc:
+                row_errors.append(f"{metric_date} 汇总失败：{exc}")
+
+    if imported == 0:
+        detail = "；".join(row_errors[:3]) if row_errors else "没有可导入的合法数据"
+        raise ValueError(detail)
 
     profile = db.scalar(select(MappingProfile).where(MappingProfile.platform == batch.account.platform))
     if not profile:
@@ -353,4 +375,5 @@ def import_batch(db: Session, batch: ImportBatch, mapping: dict[str, str]) -> in
     batch.start_date = min(dates) if dates else None
     batch.end_date = max(dates) if dates else None
     batch.imported_at = datetime.now().replace(microsecond=0)
+    batch.error_message = "；".join(row_errors[:10])
     return imported

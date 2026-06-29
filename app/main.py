@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -7,6 +8,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode, urlparse
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -14,6 +16,7 @@ import markdown as md
 from openai import OpenAI
 from sqlalchemy import func, inspect, or_, select, text
 from sqlalchemy.orm import Session
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from .config import BASE_DIR, settings
@@ -69,6 +72,108 @@ from .services.runtime import (
 )
 from .services.v2 import fetchHotTopics, generateAIReport, resolve_range, syncPlatformData
 from .services.scheduler import reload_scheduler, start_scheduler, stop_scheduler
+
+
+APP_VERSION = "2026-06-29-stability-1"
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+logger = logging.getLogger("self_media_review")
+if not logger.handlers:
+    handler = logging.FileHandler(LOG_DIR / "runtime-errors.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+
+LAST_RUNTIME_ERROR = {"time": "", "path": "", "message": ""}
+
+
+def remember_runtime_error(path: str, exc: Exception) -> None:
+    message = f"{type(exc).__name__}: {exc}"
+    LAST_RUNTIME_ERROR.update({"time": datetime.now().replace(microsecond=0).isoformat(sep=" "), "path": path, "message": message})
+    logger.exception("Unhandled error at %s: %s", path, message)
+
+
+def safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value or 0)
+    except Exception:
+        return default
+
+
+def safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(float(value or 0))
+    except Exception:
+        return default
+
+
+def safe_text(value: object, default: str = "") -> str:
+    text = "" if value is None else str(value).strip()
+    return text or default
+
+
+def json_error(message: str, status_code: int = 400, **extra) -> JSONResponse:
+    payload = {"success": False, "message": message}
+    payload.update(extra)
+    return JSONResponse(payload, status_code=status_code)
+
+
+def json_success(**extra) -> JSONResponse:
+    payload = {"success": True}
+    payload.update(extra)
+    return JSONResponse(payload)
+
+
+def wants_json_response(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    return request.url.path.startswith("/api/") or "application/json" in accept
+
+
+def fallback_html(message: str) -> HTMLResponse:
+    return HTMLResponse(
+        f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>数据加载失败</title>
+<body style="margin:0;font-family:'Microsoft YaHei',sans-serif;background:#f5f5f5;color:#1f1f1f;">
+<main style="max-width:760px;margin:80px auto;padding:32px;background:#fff;border-radius:20px;box-shadow:0 20px 50px rgba(0,0,0,.06);">
+<h1 style="font-size:24px;margin:0 0 12px;">数据加载失败，请稍后重试</h1>
+<p style="font-size:14px;line-height:1.7;margin:0 0 16px;">{message}</p>
+<a href="/" style="display:inline-block;padding:10px 18px;background:#d92d20;color:#fff;text-decoration:none;border-radius:999px;">返回首页</a>
+</main></body></html>""",
+        status_code=200,
+    )
+
+
+def latest_import_status(db: Session) -> dict[str, str]:
+    try:
+        batch = db.scalar(select(ImportBatch).where(ImportBatch.deleted_at.is_(None)).order_by(ImportBatch.created_at.desc()))
+    except Exception:
+        batch = None
+    if not batch:
+        return {"file": "暂无记录", "status": "暂无记录", "time": "", "message": ""}
+    return {
+        "file": safe_text(batch.original_filename, "未命名文件"),
+        "status": safe_text(batch.status, "未知"),
+        "time": batch.created_at.strftime("%Y-%m-%d %H:%M") if getattr(batch, "created_at", None) else "",
+        "message": safe_text(batch.error_message),
+    }
+
+
+def diagnostics_status(db: Session) -> dict[str, str]:
+    database = "connected"
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        database = "disconnected"
+    openai_configured = bool(runtime_settings(db).openai_api_key)
+    return {
+        "site": "ok",
+        "database": database,
+        "openai": "configured" if openai_configured else "missing",
+        "version": APP_VERSION,
+        "last_error": LAST_RUNTIME_ERROR.get("message", ""),
+        "last_error_time": LAST_RUNTIME_ERROR.get("time", ""),
+        "last_error_path": LAST_RUNTIME_ERROR.get("path", ""),
+    }
 
 
 def initialize() -> None:
@@ -199,6 +304,32 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "app" / "templates")
 templates.env.globals.update(app_name=settings.app_name, metric_labels=LABELS)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    remember_runtime_error(request.url.path, exc)
+    if wants_json_response(request):
+        return json_error("提交的数据格式不正确，请检查后重试。", status_code=422, details=exc.errors())
+    return redirect(str(request.url.path), "提交的数据格式不正确，请检查后重试。")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if wants_json_response(request):
+        return json_error(str(exc.detail or "请求失败"), status_code=exc.status_code)
+    if exc.status_code >= 500:
+        remember_runtime_error(request.url.path, exc)
+        return fallback_html("页面暂时不可用，请稍后刷新再试。")
+    return fallback_html(str(exc.detail or "请求失败"))
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    remember_runtime_error(request.url.path, exc)
+    if wants_json_response(request):
+        return json_error("服务暂时不可用，请稍后重试。", status_code=500)
+    return fallback_html("页面暂时不可用，系统已记录这次错误。")
 
 
 def redirect(url: str, message: str = "") -> RedirectResponse:
@@ -347,9 +478,37 @@ def breakdown_report_data(case: VideoBreakdown | None) -> dict:
 
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health():
-    return {"status": "ok"}
+    try:
+        with SessionLocal() as db:
+            runtime = runtime_settings(db)
+            database = "connected"
+            try:
+                db.execute(text("SELECT 1"))
+            except Exception:
+                database = "disconnected"
+            payload = {
+                "status": "ok",
+                "time": datetime.now().replace(microsecond=0).isoformat(sep=" "),
+                "database": database,
+                "openai": "configured" if runtime.openai_api_key else "missing",
+                "version": APP_VERSION,
+            }
+            return payload
+    except Exception as exc:
+        remember_runtime_error("/api/health", exc)
+        return JSONResponse(
+            {
+                "status": "error",
+                "time": datetime.now().replace(microsecond=0).isoformat(sep=" "),
+                "database": "disconnected",
+                "openai": "missing",
+                "version": APP_VERSION,
+            },
+            status_code=200,
+        )
 
 
 @app.post("/assistant/ask")
@@ -357,14 +516,14 @@ async def ask_assistant(request: Request):
     with SessionLocal() as db:
         user = current_user(request, db)
         if not user:
-            return JSONResponse({"error": "请先登录"}, status_code=401)
+            return json_error("请先登录", status_code=401)
         runtime = runtime_settings(db)
         if not runtime.openai_api_key:
-            return JSONResponse({"answer": "系统还没有配置 OpenAI API Key，暂时无法使用 AI 助手。"})
+            return json_success(answer="系统还没有配置 OpenAI API Key，暂时无法使用 AI 助手。")
         payload = await request.json()
         question = str(payload.get("question", "")).strip()
         if not question:
-            return JSONResponse({"answer": "请输入你想问的问题。"}, status_code=400)
+            return json_error("请输入你想问的问题。", status_code=400)
         latest = db.scalar(select(func.max(DailyAccountMetric.metric_date)))
         stats = report_stats(db, latest or (date.today() - timedelta(days=1)))
         anomalies = detect_anomalies(db, latest or (date.today() - timedelta(days=1)))[:5]
@@ -378,9 +537,10 @@ async def ask_assistant(request: Request):
         try:
             client = OpenAI(api_key=runtime.openai_api_key, timeout=45)
             response = client.responses.create(model=runtime.openai_model, input=prompt)
-            return JSONResponse({"answer": response.output_text.strip() or "暂时没有可返回的内容。"})
+            return json_success(answer=response.output_text.strip() or "暂时没有可返回的内容。")
         except Exception as exc:
-            return JSONResponse({"answer": f"AI 助手暂时不可用：{type(exc).__name__}"})
+            remember_runtime_error("/assistant/ask", exc)
+            return json_error(f"AI 助手暂时不可用：{type(exc).__name__}", status_code=500)
 
 
 @app.get("/auth/login", response_class=HTMLResponse)
@@ -423,55 +583,71 @@ def dashboard(request: Request):
         if not user:
             return redirect("/auth/login")
         runtime = runtime_settings(db)
-        latest = db.scalar(select(func.max(DailyAccountMetric.metric_date)))
-        target = latest or (date.today() - timedelta(days=1))
-        stats = report_stats(db, target)
-        days = [target - timedelta(days=offset) for offset in range(6, -1, -1)]
-        trends = [{"date": day.strftime("%-m/%-d"), "views": report_stats(db, day)["current"]["views"]} for day in days]
-        max_trend = max((item["views"] for item in trends), default=0) or 1
-        for index, item in enumerate(trends):
-            item["x"] = round(7 + index * 86 / 6, 2)
-            item["y"] = round(82 - item["views"] / max_trend * 58, 2)
-        accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.is_active.is_(True))).all()
-        account_rows = []
-        for account in accounts:
-            metric = db.scalar(
-                select(DailyAccountMetric).where(
-                    DailyAccountMetric.account_id == account.id,
-                    DailyAccountMetric.metric_date == target,
+        message = request.query_params.get("message", "")
+        try:
+            latest = db.scalar(select(func.max(DailyAccountMetric.metric_date)))
+            target = latest or (date.today() - timedelta(days=1))
+            stats = report_stats(db, target)
+            days = [target - timedelta(days=offset) for offset in range(6, -1, -1)]
+            trends = [{"date": day.strftime("%m/%d"), "views": safe_float(report_stats(db, day)["current"]["views"])} for day in days]
+            max_trend = max((item["views"] for item in trends), default=0) or 1
+            for index, item in enumerate(trends):
+                item["x"] = round(7 + index * 86 / 6, 2)
+                item["y"] = round(82 - item["views"] / max_trend * 58, 2)
+            accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.is_active.is_(True))).all()
+            account_rows = []
+            for account in accounts:
+                metric = db.scalar(
+                    select(DailyAccountMetric).where(
+                        DailyAccountMetric.account_id == account.id,
+                        DailyAccountMetric.metric_date == target,
+                    )
                 )
-            )
-            previous_metric = db.scalar(
-                select(DailyAccountMetric).where(
-                    DailyAccountMetric.account_id == account.id,
-                    DailyAccountMetric.metric_date == target - timedelta(days=1),
+                previous_metric = db.scalar(
+                    select(DailyAccountMetric).where(
+                        DailyAccountMetric.account_id == account.id,
+                        DailyAccountMetric.metric_date == target - timedelta(days=1),
+                    )
                 )
-            )
-            interactions = (metric.likes + metric.comments + metric.favorites + metric.shares) if metric else 0
-            previous_interactions = (
-                previous_metric.likes + previous_metric.comments + previous_metric.favorites + previous_metric.shares
-            ) if previous_metric else 0
-            rate = interactions / metric.views if metric and metric.views else 0
-            previous_rate = previous_interactions / previous_metric.views if previous_metric and previous_metric.views else 0
-            follower_change = ((metric.followers_new - previous_metric.followers_new) / previous_metric.followers_new * 100) if metric and previous_metric and previous_metric.followers_new else None
-            account_rows.append({
-                "account": account,
-                "metric": metric,
-                "rate": rate,
-                "rate_change": (rate - previous_rate) * 100,
-                "follower_change": follower_change,
-            })
-        contents = db.scalars(
-            select(ContentDailyMetric).where(ContentDailyMetric.metric_date == target).order_by(ContentDailyMetric.views.desc()).limit(8)
-        ).all()
-        history_rows = db.scalars(
-            select(DailyAccountMetric).where(
-                DailyAccountMetric.metric_date >= target - timedelta(days=14),
-                DailyAccountMetric.metric_date <= target,
-            )
-        ).all()
-        views_series = [(row.metric_date, row.views) for row in history_rows]
-        followers_series = [(row.metric_date, row.followers_new) for row in history_rows]
+                interactions = safe_float(getattr(metric, "likes", 0)) + safe_float(getattr(metric, "comments", 0)) + safe_float(getattr(metric, "favorites", 0)) + safe_float(getattr(metric, "shares", 0))
+                previous_interactions = safe_float(getattr(previous_metric, "likes", 0)) + safe_float(getattr(previous_metric, "comments", 0)) + safe_float(getattr(previous_metric, "favorites", 0)) + safe_float(getattr(previous_metric, "shares", 0))
+                metric_views = safe_float(getattr(metric, "views", 0))
+                previous_views = safe_float(getattr(previous_metric, "views", 0))
+                rate = interactions / metric_views if metric_views else 0
+                previous_rate = previous_interactions / previous_views if previous_views else 0
+                prev_followers = safe_float(getattr(previous_metric, "followers_new", 0))
+                cur_followers = safe_float(getattr(metric, "followers_new", 0))
+                follower_change = ((cur_followers - prev_followers) / prev_followers * 100) if prev_followers else None
+                account_rows.append({
+                    "account": account,
+                    "metric": metric,
+                    "rate": rate,
+                    "rate_change": (rate - previous_rate) * 100,
+                    "follower_change": follower_change,
+                })
+            contents = db.scalars(
+                select(ContentDailyMetric).where(ContentDailyMetric.metric_date == target).order_by(ContentDailyMetric.views.desc()).limit(8)
+            ).all()
+            history_rows = db.scalars(
+                select(DailyAccountMetric).where(
+                    DailyAccountMetric.metric_date >= target - timedelta(days=14),
+                    DailyAccountMetric.metric_date <= target,
+                )
+            ).all()
+            views_series = [(row.metric_date, safe_float(row.views)) for row in history_rows if getattr(row, "metric_date", None)]
+            followers_series = [(row.metric_date, safe_float(row.followers_new)) for row in history_rows if getattr(row, "metric_date", None)]
+            anomalies = detect_anomalies(db, target)
+        except Exception as exc:
+            remember_runtime_error("/", exc)
+            target = date.today() - timedelta(days=1)
+            stats = {"current": {field: 0 for field in METRICS}, "previous": {field: 0 for field in METRICS}}
+            trends = [{"date": (target - timedelta(days=offset)).strftime("%m/%d"), "views": 0, "x": round(7 + index * 86 / 6, 2), "y": 82} for index, offset in enumerate(range(6, -1, -1))]
+            account_rows = []
+            contents = []
+            views_series = []
+            followers_series = []
+            anomalies = []
+            message = message or "数据加载失败，请稍后重试"
         return page(
             request,
             "dashboard.html",
@@ -483,30 +659,37 @@ def dashboard(request: Request):
             contents=contents,
             report_hour=f"{runtime.report_hour:02d}:{runtime.report_minute:02d}",
             target_weekday="星期" + "一二三四五六日"[target.weekday()],
-            anomalies=detect_anomalies(db, target),
+            anomalies=anomalies,
             forecast_views=forecast_trend(views_series),
             forecast_followers=forecast_trend(followers_series),
+            message=message,
         )
 
 
 @app.get("/accounts", response_class=HTMLResponse)
 def accounts_page(request: Request, q: str = "", platform: str = ""):
     with SessionLocal() as db:
-        query = select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None))
-        if q:
-            needle = q.strip()
-            query = query.where(
-                or_(
-                    PlatformAccount.name.contains(needle),
-                    PlatformAccount.external_id.contains(needle),
-                    PlatformAccount.manager_name.contains(needle),
-                    PlatformAccount.business_type.contains(needle),
-                    PlatformAccount.positioning.contains(needle),
+        try:
+            query = select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None))
+            if q:
+                needle = q.strip()
+                query = query.where(
+                    or_(
+                        PlatformAccount.name.contains(needle),
+                        PlatformAccount.external_id.contains(needle),
+                        PlatformAccount.manager_name.contains(needle),
+                        PlatformAccount.business_type.contains(needle),
+                        PlatformAccount.positioning.contains(needle),
+                    )
                 )
-            )
-        if platform:
-            query = query.where(PlatformAccount.platform == platform)
-        accounts = db.scalars(query.order_by(PlatformAccount.platform, PlatformAccount.name)).all()
+            if platform:
+                query = query.where(PlatformAccount.platform == platform)
+            accounts = db.scalars(query.order_by(PlatformAccount.platform, PlatformAccount.name)).all()
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/accounts", exc)
+            accounts = []
+            message = "数据加载失败，请稍后重试"
         return page(
             request,
             "accounts.html",
@@ -516,6 +699,7 @@ def accounts_page(request: Request, q: str = "", platform: str = ""):
             search=q,
             selected_platform=platform,
             can_manage_accounts=can(current_actor(request, db), "manage_accounts"),
+            message=message,
         )
 
 
@@ -790,10 +974,16 @@ def purge_account(account_id: int, request: Request, csrf: str = Form()):
 @app.get("/imports/upload", response_class=HTMLResponse)
 def upload_page(request: Request):
     with SessionLocal() as db:
-        accounts = db.scalars(
-            select(PlatformAccount).where(PlatformAccount.is_active.is_(True), PlatformAccount.deleted_at.is_(None)).order_by(PlatformAccount.platform)
-        ).all()
-        return page(request, "upload.html", db, accounts=accounts, max_mb=runtime_settings(db).max_upload_mb)
+        try:
+            accounts = db.scalars(
+                select(PlatformAccount).where(PlatformAccount.is_active.is_(True), PlatformAccount.deleted_at.is_(None)).order_by(PlatformAccount.platform)
+            ).all()
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/imports/upload", exc)
+            accounts = []
+            message = "数据加载失败，请稍后重试"
+        return page(request, "upload.html", db, accounts=accounts, max_mb=runtime_settings(db).max_upload_mb, message=message)
 
 
 @app.post("/imports/upload")
@@ -813,6 +1003,9 @@ async def upload_file(request: Request, account_id: int = Form(), file: UploadFi
         with stored.open("wb") as output:
             shutil.copyfileobj(file.file, output)
         runtime = runtime_settings(db)
+        if stored.stat().st_size == 0:
+            stored.unlink(missing_ok=True)
+            return redirect("/imports/upload", "上传文件为空，请重新选择")
         if stored.stat().st_size > runtime.max_upload_mb * 1024 * 1024:
             stored.unlink(missing_ok=True)
             return redirect("/imports/upload", f"文件不能超过 {runtime.max_upload_mb}MB")
@@ -831,6 +1024,7 @@ async def upload_file(request: Request, account_id: int = Form(), file: UploadFi
             batch.mapping_json = json.dumps({"columns": columns, "rows": rows, "suggested": mapping}, ensure_ascii=False)
             db.commit()
         except Exception as exc:
+            remember_runtime_error("/imports/upload", exc)
             batch.status = "failed"
             batch.error_message = str(exc)
             db.commit()
@@ -843,13 +1037,13 @@ async def upload_multiple_files(request: Request):
     with SessionLocal() as db:
         user = current_user(request, db)
         if not user or not can(user, "import_data"):
-            return JSONResponse({"error": "没有权限"}, status_code=403)
+            return json_error("没有权限", status_code=403)
         form = await request.form()
         verify_csrf(request, str(form.get("csrf", "")))
         account_id = int(str(form.get("account_id", "0")) or "0")
         account = db.get(PlatformAccount, account_id)
         if not account or account.deleted_at:
-            return JSONResponse({"error": "请选择有效的平台账号"}, status_code=400)
+            return json_error("请选择有效的平台账号", status_code=400)
         files = form.getlist("files")
         runtime = runtime_settings(db)
         results = []
@@ -861,6 +1055,10 @@ async def upload_multiple_files(request: Request):
             stored = settings.storage_dir / "uploads" / f"{uuid.uuid4().hex}{suffix}"
             with stored.open("wb") as output:
                 shutil.copyfileobj(file.file, output)
+            if stored.stat().st_size == 0:
+                stored.unlink(missing_ok=True)
+                results.append({"name": file.filename, "status": "failed", "message": "文件为空"})
+                continue
             if stored.stat().st_size > runtime.max_upload_mb * 1024 * 1024:
                 stored.unlink(missing_ok=True)
                 results.append({"name": file.filename, "status": "failed", "message": f"超过 {runtime.max_upload_mb}MB"})
@@ -880,11 +1078,12 @@ async def upload_multiple_files(request: Request):
                 batch.mapping_json = json.dumps({"columns": columns, "rows": rows, "suggested": mapping}, ensure_ascii=False)
                 results.append({"name": file.filename, "status": "preview", "batch_id": batch.id})
             except Exception as exc:
+                remember_runtime_error("/imports/upload-multi", exc)
                 batch.status = "failed"
                 batch.error_message = str(exc)
                 results.append({"name": file.filename, "status": "failed", "message": str(exc)})
         db.commit()
-        return JSONResponse({"results": results, "message": "批量上传已完成"})
+        return json_success(results=results, message="批量上传已完成")
 
 
 @app.get("/imports/{batch_id}/preview", response_class=HTMLResponse)
@@ -920,6 +1119,7 @@ async def commit_import(batch_id: int, request: Request):
             db.commit()
             return redirect("/imports", f"成功导入 {count} 行数据")
         except Exception as exc:
+            remember_runtime_error(f"/imports/{batch_id}/commit", exc)
             db.rollback()
             batch = db.get(ImportBatch, batch_id)
             batch.status = "failed"
@@ -938,25 +1138,32 @@ def imports_page(
     end_date: str = "",
 ):
     with SessionLocal() as db:
-        query = select(ImportBatch).where(ImportBatch.deleted_at.is_(None))
-        if status:
-            query = query.where(ImportBatch.status == status)
-        if platform:
-            query = query.join(PlatformAccount).where(PlatformAccount.platform == platform)
-        if account_id:
-            query = query.where(ImportBatch.account_id == account_id)
-        if start_date:
-            try:
-                query = query.where(ImportBatch.created_at >= datetime.combine(date.fromisoformat(start_date), datetime.min.time()))
-            except ValueError:
-                pass
-        if end_date:
-            try:
-                query = query.where(ImportBatch.created_at <= datetime.combine(date.fromisoformat(end_date), datetime.max.time()))
-            except ValueError:
-                pass
-        batches = db.scalars(query.order_by(ImportBatch.created_at.desc()).limit(100)).all()
-        accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
+        try:
+            query = select(ImportBatch).where(ImportBatch.deleted_at.is_(None))
+            if status:
+                query = query.where(ImportBatch.status == status)
+            if platform:
+                query = query.join(PlatformAccount).where(PlatformAccount.platform == platform)
+            if account_id:
+                query = query.where(ImportBatch.account_id == account_id)
+            if start_date:
+                try:
+                    query = query.where(ImportBatch.created_at >= datetime.combine(date.fromisoformat(start_date), datetime.min.time()))
+                except ValueError:
+                    pass
+            if end_date:
+                try:
+                    query = query.where(ImportBatch.created_at <= datetime.combine(date.fromisoformat(end_date), datetime.max.time()))
+                except ValueError:
+                    pass
+            batches = db.scalars(query.order_by(ImportBatch.created_at.desc()).limit(100)).all()
+            accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/imports", exc)
+            batches = []
+            accounts = []
+            message = "数据加载失败，请稍后重试"
         return page(
             request,
             "imports.html",
@@ -969,6 +1176,7 @@ def imports_page(
             start_date=start_date,
             end_date=end_date,
             accounts=accounts,
+            message=message,
         )
 
 
@@ -1086,55 +1294,70 @@ def metrics_page(
         if range_start > range_end:
             range_start, range_end = range_end, range_start
 
-        accounts = db.scalars(select(PlatformAccount).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
-        platforms = sorted({account.platform for account in accounts})
-        selected_platforms = set(platform)
-        selected_account_ids = set(account_id)
+        try:
+            accounts = db.scalars(select(PlatformAccount).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
+            platforms = sorted({account.platform for account in accounts if safe_text(getattr(account, "platform", ""))})
+            selected_platforms = set(platform)
+            selected_account_ids = set(account_id)
 
-        query = (
-            select(DailyAccountMetric)
-            .join(PlatformAccount)
-            .where(
-                DailyAccountMetric.metric_date >= range_start,
-                DailyAccountMetric.metric_date <= range_end,
+            query = (
+                select(DailyAccountMetric)
+                .join(PlatformAccount)
+                .where(
+                    DailyAccountMetric.metric_date >= range_start,
+                    DailyAccountMetric.metric_date <= range_end,
+                )
             )
-        )
-        if selected_platforms:
-            query = query.where(PlatformAccount.platform.in_(selected_platforms))
-        if selected_account_ids:
-            query = query.where(DailyAccountMetric.account_id.in_(selected_account_ids))
-        rows = db.scalars(
-            query.order_by(DailyAccountMetric.metric_date.desc(), DailyAccountMetric.views.desc())
-        ).all()
-        compare_target = parsed(comparison_day, range_end)
-        if compare_target < range_start or compare_target > range_end:
+            if selected_platforms:
+                query = query.where(PlatformAccount.platform.in_(selected_platforms))
+            if selected_account_ids:
+                query = query.where(DailyAccountMetric.account_id.in_(selected_account_ids))
+            rows = db.scalars(
+                query.order_by(DailyAccountMetric.metric_date.desc(), DailyAccountMetric.views.desc())
+            ).all()
+            compare_target = parsed(comparison_day, range_end)
+            if compare_target < range_start or compare_target > range_end:
+                compare_target = range_end
+            compare_rows = [row for row in rows if row.metric_date == compare_target]
+            saved_views = db.scalars(select(SavedView).where(SavedView.scope == "metrics").order_by(SavedView.is_default.desc(), SavedView.updated_at.desc())).all()
+            saved_view_links = []
+            for view in saved_views:
+                try:
+                    params = json.loads(view.params_json or "{}")
+                except json.JSONDecodeError:
+                    params = {}
+                query_parts: list[tuple[str, str]] = []
+                for key in ("start_date", "end_date", "comparison_day"):
+                    value = params.get(key)
+                    if value:
+                        query_parts.append((key, str(value)))
+                for item in params.get("platform", []) or []:
+                    if item:
+                        query_parts.append(("platform", str(item)))
+                for item in params.get("account_ids", []) or []:
+                    query_parts.append(("account_id", str(item)))
+                saved_view_links.append(
+                    {
+                        "id": view.id,
+                        "name": view.name,
+                        "updated_at": view.updated_at,
+                        "href": "/metrics" + (f"?{urlencode(query_parts)}" if query_parts else ""),
+                    }
+                )
+            anomalies = detect_anomalies(db, compare_target)
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/metrics", exc)
+            accounts = []
+            platforms = []
+            selected_platforms = set(platform)
+            selected_account_ids = set(account_id)
+            rows = []
             compare_target = range_end
-        compare_rows = [row for row in rows if row.metric_date == compare_target]
-        saved_views = db.scalars(select(SavedView).where(SavedView.scope == "metrics").order_by(SavedView.is_default.desc(), SavedView.updated_at.desc())).all()
-        saved_view_links = []
-        for view in saved_views:
-            try:
-                params = json.loads(view.params_json or "{}")
-            except json.JSONDecodeError:
-                params = {}
-            query_parts: list[tuple[str, str]] = []
-            for key in ("start_date", "end_date", "comparison_day"):
-                value = params.get(key)
-                if value:
-                    query_parts.append((key, str(value)))
-            for item in params.get("platform", []) or []:
-                if item:
-                    query_parts.append(("platform", str(item)))
-            for item in params.get("account_ids", []) or []:
-                query_parts.append(("account_id", str(item)))
-            saved_view_links.append(
-                {
-                    "id": view.id,
-                    "name": view.name,
-                    "updated_at": view.updated_at,
-                    "href": "/metrics" + (f"?{urlencode(query_parts)}" if query_parts else ""),
-                }
-            )
+            compare_rows = []
+            saved_view_links = []
+            anomalies = []
+            message = "数据加载失败，请稍后重试"
         return page(
             request,
             "metrics.html",
@@ -1151,9 +1374,10 @@ def metrics_page(
             selected_account_ids=selected_account_ids,
             account_groups=comparison_groups(compare_rows, "account"),
             platform_groups=comparison_groups(compare_rows, "platform"),
-            anomalies=detect_anomalies(db, compare_target),
+            anomalies=anomalies,
             forecast_views=forecast_trend([(row.metric_date, row.views) for row in rows if row.metric_date >= range_end - timedelta(days=14)]),
             saved_views=saved_view_links,
+            message=message,
         )
 
 
@@ -1208,27 +1432,44 @@ def delete_metric_view(view_id: int, request: Request, csrf: str = Form()):
 @app.get("/reports", response_class=HTMLResponse)
 def reports_page(request: Request):
     with SessionLocal() as db:
-        reports = db.scalars(select(Report).where(Report.deleted_at.is_(None)).order_by(Report.report_date.desc())).all()
-        summary_reports = db.scalars(select(SummaryReport).where(SummaryReport.deleted_at.is_(None)).order_by(SummaryReport.end_date.desc())).all()
-        return page(request, "reports.html", db, reports=reports, summary_reports=summary_reports)
+        try:
+            reports = db.scalars(select(Report).where(Report.deleted_at.is_(None)).order_by(Report.report_date.desc())).all()
+            summary_reports = db.scalars(select(SummaryReport).where(SummaryReport.deleted_at.is_(None)).order_by(SummaryReport.end_date.desc())).all()
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/reports", exc)
+            reports = []
+            summary_reports = []
+            message = "数据加载失败，请稍后重试"
+        return page(request, "reports.html", db, reports=reports, summary_reports=summary_reports, message=message)
 
 
 @app.get("/hotspots", response_class=HTMLResponse)
 def hotspots_page(request: Request, report_date: str = ""):
     with SessionLocal() as db:
-        selected_date = None
-        if report_date:
-            try:
-                selected_date = date.fromisoformat(report_date)
-            except ValueError:
-                selected_date = None
-        history = db.scalars(select(HotspotReport).order_by(HotspotReport.report_date.desc()).limit(14)).all()
-        report = None
-        if selected_date:
-            report = db.scalar(select(HotspotReport).where(HotspotReport.report_date == selected_date))
-        if not report:
-            report = history[0] if history else None
-        return page(request, "hotspots.html", db, report=report, payload=report_payload(report), hotspot_history=history, selected_hotspot_date=selected_date or (report.report_date if report else None))
+        try:
+            selected_date = None
+            if report_date:
+                try:
+                    selected_date = date.fromisoformat(report_date)
+                except ValueError:
+                    selected_date = None
+            history = db.scalars(select(HotspotReport).order_by(HotspotReport.report_date.desc()).limit(14)).all()
+            report = None
+            if selected_date:
+                report = db.scalar(select(HotspotReport).where(HotspotReport.report_date == selected_date))
+            if not report:
+                report = history[0] if history else None
+            payload = report_payload(report)
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/hotspots", exc)
+            selected_date = None
+            history = []
+            report = None
+            payload = report_payload(None)
+            message = "数据加载失败，请稍后重试"
+        return page(request, "hotspots.html", db, report=report, payload=payload, hotspot_history=history, selected_hotspot_date=selected_date or (report.report_date if report else None), message=message)
 
 
 @app.post("/hotspots/refresh")
@@ -1569,10 +1810,18 @@ def generate_ai_review(
 @app.get("/report-builder", response_class=HTMLResponse)
 def report_builder_page(request: Request):
     with SessionLocal() as db:
-        accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None), PlatformAccount.is_active.is_(True)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
-        drafts = db.scalars(select(GeneratedReportDraft).order_by(GeneratedReportDraft.created_at.desc()).limit(8)).all()
-        ai_reviews = db.scalars(select(AiReview).order_by(AiReview.created_at.desc()).limit(8)).all()
-        return page(request, "report_builder.html", db, accounts=accounts, drafts=drafts, ai_reviews=ai_reviews, draft=None)
+        try:
+            accounts = db.scalars(select(PlatformAccount).where(PlatformAccount.deleted_at.is_(None), PlatformAccount.is_active.is_(True)).order_by(PlatformAccount.platform, PlatformAccount.name)).all()
+            drafts = db.scalars(select(GeneratedReportDraft).order_by(GeneratedReportDraft.created_at.desc()).limit(8)).all()
+            ai_reviews = db.scalars(select(AiReview).order_by(AiReview.created_at.desc()).limit(8)).all()
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/report-builder", exc)
+            accounts = []
+            drafts = []
+            ai_reviews = []
+            message = "数据加载失败，请稍后重试"
+        return page(request, "report_builder.html", db, accounts=accounts, drafts=drafts, ai_reviews=ai_reviews, draft=None, message=message)
 
 
 @app.post("/report-builder/generate")
@@ -1648,7 +1897,13 @@ def generate_report_builder(
 @app.get("/topic-center", response_class=HTMLResponse)
 def topic_center_page(request: Request, keyword: str = "", business: str = "无人机足球"):
     with SessionLocal() as db:
-        topics = db.scalars(select(TopicIdea).order_by(TopicIdea.created_at.desc()).limit(40)).all()
+        try:
+            topics = db.scalars(select(TopicIdea).order_by(TopicIdea.created_at.desc()).limit(40)).all()
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/topic-center", exc)
+            topics = []
+            message = "数据加载失败，请稍后重试"
         return page(
             request,
             "topic_center.html",
@@ -1657,6 +1912,7 @@ def topic_center_page(request: Request, keyword: str = "", business: str = "无�
             keyword=keyword,
             business=business,
             topic_status_options=_topic_status_options(),
+            message=message,
         )
 
 
@@ -2170,6 +2426,7 @@ def _run_breakdown_task(breakdown_id: int, payload: dict[str, str]) -> None:
             case.progress = 100
             case.error_message = ""
         except Exception as exc:
+            remember_runtime_error(f"/breakdown/tasks/{breakdown_id}", exc)
             case.analysis_status = "失败"
             case.status = "失败"
             case.progress = min(max(case.progress or 0, 0), 99)
@@ -2187,26 +2444,25 @@ def _run_breakdown_task(breakdown_id: int, payload: dict[str, str]) -> None:
 def breakdown_status(request: Request, breakdown_id: int):
     with SessionLocal() as db:
         if not current_user(request, db):
-            return JSONResponse({"error": "请先登录"}, status_code=401)
+            return json_error("请先登录", status_code=401)
         case = db.get(VideoBreakdown, breakdown_id)
         if not case:
-            return JSONResponse({"error": "案例不存在"}, status_code=404)
+            return json_error("案例不存在", status_code=404)
         data = breakdown_report_data(case)
-        return JSONResponse(
-            {
-                "id": case.id,
-                "status": case.status or "未开始",
-                "analysis_status": case.analysis_status or case.status or "未开始",
-                "fetch_status": case.fetch_status or "未抓取",
-                "progress": int(case.progress or 0),
-                "error_message": case.error_message or "",
-                "fetch_error": case.fetch_error or "",
-                "analysis_markdown": case.analysis_markdown or "",
-                "markdown_html": data.get("markdown_html", ""),
-                "title": case.title or "爆款拆解报告",
-                "created_at": case.created_at.isoformat(),
-                "updated_at": case.updated_at.isoformat() if getattr(case, "updated_at", None) else "",
-            }
+        return json_success(
+            ok=True,
+            id=case.id,
+            status=case.status or "未开始",
+            analysis_status=case.analysis_status or case.status or "未开始",
+            fetch_status=case.fetch_status or "未抓取",
+            progress=int(case.progress or 0),
+            error_message=case.error_message or "",
+            fetch_error=case.fetch_error or "",
+            analysis_markdown=case.analysis_markdown or "",
+            markdown_html=data.get("markdown_html", ""),
+            title=case.title or "爆款拆解报告",
+            created_at=case.created_at.isoformat(),
+            updated_at=case.updated_at.isoformat() if getattr(case, "updated_at", None) else "",
         )
 
 
@@ -2247,47 +2503,47 @@ def _serialize_breakdown_case(case: VideoBreakdown) -> dict[str, object]:
 async def api_fetch_video_info(request: Request):
     with SessionLocal() as db:
         if not current_user(request, db):
-            return JSONResponse({"error": "请先登录"}, status_code=401)
+            return json_error("请先登录", status_code=401)
         try:
             payload = await request.json()
         except Exception:
             payload = {}
         video_url = str(payload.get("video_url") or payload.get("source_url") or "").strip()
         if not video_url:
-            return JSONResponse({"ok": False, "fetch_status": "未抓取", "fetch_error": "请输入视频链接。"}, status_code=400)
+            return json_error("请输入视频链接。", status_code=400, ok=False, fetch_status="未抓取", fetch_error="请输入视频链接。")
         result = fetch_video_info(video_url)
         normalized_url = normalize_breakdown_url(video_url)
         if not result.get("ok"):
             error = str(result.get("error") or "该平台可能限制自动抓取，请手动补充视频信息后继续拆解。")
             platform = str(result.get("platform") or detect_platform_from_url(normalized_url))
-            return JSONResponse(
-                {
-                    "ok": False,
+            return json_error(
+                error,
+                status_code=200,
+                ok=False,
+                platform=platform,
+                fetch_status="抓取失败",
+                fetch_error=error,
+                data={
+                    "source_url": normalized_url,
                     "platform": platform,
+                    "title": "",
+                    "cover_url": "",
+                    "cover_description": "",
+                    "author_name": "",
+                    "publish_time": "",
+                    "duration": "",
+                    "views": 0,
+                    "likes": 0,
+                    "comments": 0,
+                    "collect_count": 0,
+                    "share_count": 0,
+                    "video_text": "",
+                    "transcript": "",
                     "fetch_status": "抓取失败",
                     "fetch_error": error,
-                    "data": {
-                        "source_url": normalized_url,
-                        "platform": platform,
-                        "title": "",
-                        "cover_url": "",
-                        "cover_description": "",
-                        "author_name": "",
-                        "publish_time": "",
-                        "duration": "",
-                        "views": 0,
-                        "likes": 0,
-                        "comments": 0,
-                        "collect_count": 0,
-                        "share_count": 0,
-                        "video_text": "",
-                        "transcript": "",
-                        "fetch_status": "抓取失败",
-                        "fetch_error": error,
-                    },
-                }
+                },
             )
-        return JSONResponse({"ok": True, **result.get("data", {}), "fetch_status": "抓取成功", "fetch_error": ""})
+        return json_success(ok=True, **result.get("data", {}), fetch_status="抓取成功", fetch_error="")
 
 
 @app.post("/breakdown/actions/manual")
@@ -2330,7 +2586,7 @@ def breakdown_fetch(request: Request, source_url: str = Form(""), csrf: str = Fo
 def api_viral_list(request: Request, q: str = "", platform: str = "", page: int = 1, page_size: int = 20):
     with SessionLocal() as db:
         if not current_user(request, db):
-            return JSONResponse({"error": "请先登录"}, status_code=401)
+            return json_error("请先登录", status_code=401)
         try:
             query = select(VideoBreakdown)
             if q:
@@ -2347,29 +2603,22 @@ def api_viral_list(request: Request, q: str = "", platform: str = "", page: int 
             page = max(1, page)
             page_size = max(1, min(page_size, 100))
             rows = []
-        return JSONResponse(
-            {
-                "ok": True,
-                "total": total,
-                "page": page,
-                "page_size": page_size,
-                "items": [_serialize_breakdown_case(item) for item in rows],
-            }
-        )
+        return json_success(ok=True, total=total, page=page, page_size=page_size, items=[_serialize_breakdown_case(item) for item in rows])
 
 
 @app.get("/api/viral/{viral_id}")
 def api_viral_detail(request: Request, viral_id: int):
     with SessionLocal() as db:
         if not current_user(request, db):
-            return JSONResponse({"error": "请先登录"}, status_code=401)
+            return json_error("请先登录", status_code=401)
         try:
             case = db.get(VideoBreakdown, viral_id)
             if not case:
-                return JSONResponse({"error": "案例不存在"}, status_code=404)
-            return JSONResponse({"ok": True, "item": _serialize_breakdown_case(case)})
-        except Exception:
-            return JSONResponse({"ok": False, "error": "爆款拆解数据加载失败，请稍后重试。"}, status_code=500)
+                return json_error("案例不存在", status_code=404)
+            return json_success(ok=True, item=_serialize_breakdown_case(case))
+        except Exception as exc:
+            remember_runtime_error(f"/api/viral/{viral_id}", exc)
+            return json_error("爆款拆解数据加载失败，请稍后重试。", status_code=500, ok=False)
 
 
 @app.delete("/api/viral/{viral_id}")
@@ -2377,14 +2626,14 @@ def api_delete_viral(request: Request, viral_id: int):
     with SessionLocal() as db:
         actor = current_actor(request, db)
         if not actor or not can(actor, "delete_data"):
-            return JSONResponse({"error": "没有权限"}, status_code=403)
+            return json_error("没有权限", status_code=403)
         case = db.get(VideoBreakdown, viral_id)
         if not case:
-            return JSONResponse({"error": "案例不存在"}, status_code=404)
+            return json_error("案例不存在", status_code=404)
         db.delete(case)
         log_operation(db, actor, "删除", "爆款拆解", case.title or case.source_url or "未命名", "通过 API 删除拆解案例")
         db.commit()
-        return JSONResponse({"ok": True})
+        return json_success(ok=True)
 
 
 def _start_breakdown_analysis(db: Session, actor: User | None, payload: dict[str, object], background_tasks: BackgroundTasks | None = None) -> VideoBreakdown:
@@ -2451,21 +2700,21 @@ async def api_viral_analyze(request: Request, background_tasks: BackgroundTasks)
     with SessionLocal() as db:
         actor = current_actor(request, db)
         if not can(actor, "use_breakdown"):
-            return JSONResponse({"error": "没有权限"}, status_code=403)
+            return json_error("没有权限", status_code=403)
         try:
             payload = await request.json()
         except Exception:
             payload = {}
         if _has_negative_breakdown_value(payload.get("views"), payload.get("likes"), payload.get("comments"), payload.get("collect_count"), payload.get("share_count")):
-            return JSONResponse({"error": "播放量、点赞、评论、收藏和转发不能为负数。"}, status_code=400)
+            return json_error("播放量、点赞、评论、收藏和转发不能为负数。", status_code=400)
         normalized = _breakdown_payload_from_input(payload)
         if not normalized["source_url"]:
-            return JSONResponse({"error": "视频链接格式不正确，请填写常见平台的 http 或 https 链接。"}, status_code=400)
+            return json_error("视频链接格式不正确，请填写常见平台的 http 或 https 链接。", status_code=400)
         case = _start_breakdown_analysis(db, actor, normalized, background_tasks)
         db.commit()
         if case.status == "失败":
-            return JSONResponse({"ok": False, "id": case.id, "error": case.error_message or "拆解失败"}, status_code=400)
-        return JSONResponse({"ok": True, "id": case.id, "status": case.status, "progress": case.progress, "message": "拆解任务已开始，完成后会自动显示结果"})
+            return json_error(case.error_message or "拆解失败", status_code=400, ok=False, id=case.id)
+        return json_success(ok=True, id=case.id, status=case.status, progress=case.progress, message="拆解任务已开始，完成后会自动显示结果")
 
 
 @app.post("/breakdown/generate")
@@ -2547,18 +2796,24 @@ def delete_breakdown(breakdown_id: int, request: Request, csrf: str = Form()):
 @app.get("/materials", response_class=HTMLResponse)
 def materials_page(request: Request, q: str = "", tag: str = ""):
     with SessionLocal() as db:
-        query = select(MaterialAsset).where(MaterialAsset.deleted_at.is_(None))
-        if q:
-            needle = q.strip()
-            query = query.where(or_(MaterialAsset.name.contains(needle), MaterialAsset.note.contains(needle), MaterialAsset.project_name.contains(needle)))
-        materials = db.scalars(query.order_by(MaterialAsset.is_favorite.desc(), MaterialAsset.created_at.desc()).limit(100)).all()
-        material_rows = []
-        for item in materials:
-            tags = safe_json_loads(item.tags_json, [])
-            if tag and tag not in tags:
-                continue
-            material_rows.append({"item": item, "tags": tags})
-        return page(request, "materials.html", db, materials=material_rows, q=q, tag=tag)
+        try:
+            query = select(MaterialAsset).where(MaterialAsset.deleted_at.is_(None))
+            if q:
+                needle = q.strip()
+                query = query.where(or_(MaterialAsset.name.contains(needle), MaterialAsset.note.contains(needle), MaterialAsset.project_name.contains(needle)))
+            materials = db.scalars(query.order_by(MaterialAsset.is_favorite.desc(), MaterialAsset.created_at.desc()).limit(100)).all()
+            material_rows = []
+            for item in materials:
+                tags = safe_json_loads(item.tags_json, [])
+                if tag and tag not in tags:
+                    continue
+                material_rows.append({"item": item, "tags": tags})
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/materials", exc)
+            material_rows = []
+            message = "数据加载失败，请稍后重试"
+        return page(request, "materials.html", db, materials=material_rows, q=q, tag=tag, message=message)
 
 
 @app.post("/materials")
@@ -2683,8 +2938,15 @@ def cleanup_test_data(request: Request, csrf: str = Form()):
 @app.get("/users", response_class=HTMLResponse)
 def users_page(request: Request):
     with SessionLocal() as db:
-        users = db.scalars(select(User).where(User.deleted_at.is_(None)).order_by(User.created_at)).all()
-        trash = db.scalars(select(User).where(User.deleted_at.is_not(None)).order_by(User.deleted_at.desc())).all()
+        try:
+            users = db.scalars(select(User).where(User.deleted_at.is_(None)).order_by(User.created_at)).all()
+            trash = db.scalars(select(User).where(User.deleted_at.is_not(None)).order_by(User.deleted_at.desc())).all()
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/users", exc)
+            users = []
+            trash = []
+            message = "数据加载失败，请稍后重试"
         return page(
             request,
             "users.html",
@@ -2696,6 +2958,7 @@ def users_page(request: Request):
                 (ROLE_SUPERADMIN, role_label(ROLE_SUPERADMIN)),
                 (ROLE_MEMBER, role_label(ROLE_MEMBER)),
             ],
+            message=message,
         )
 
 
@@ -2842,34 +3105,52 @@ def change_password(request: Request, current_password: str = Form(), new_passwo
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request):
     with SessionLocal() as db:
-        recipients = db.scalars(select(EmailRecipient).order_by(EmailRecipient.created_at)).all()
-        runtime = runtime_settings(db)
-        hotspot_history = db.scalars(select(HotspotReport).order_by(HotspotReport.report_date.desc()).limit(10)).all()
-        api_tail = runtime.openai_api_key[-4:] if runtime.openai_api_key else ""
-        config_status = {
-            "openai": bool(runtime.openai_api_key),
-            "smtp": bool(runtime.smtp_host and runtime.smtp_username and runtime.smtp_password),
-            "secure": settings.cookie_secure,
-        }
-        appearance = get_json_setting(db, "appearance", {"theme": "light", "font_scale": "100"})
-        business_keywords = get_json_setting(
-            db,
-            "business_keywords",
-            ["无人机足球", "青少年科技体育", "科技特长生", "赛事培训", "安全科普"],
-        )
-        hotspot_sources = get_json_setting(db, "hotspot_sources", ["抖音", "小红书", "微信视频号"])
-        report_schedule = {
-            "frequency": get_setting(db, "report_frequency", "daily"),
-            "weekday": get_setting(db, "report_weekday", "mon"),
-            "monthday": get_setting(db, "report_monthday", "1"),
-        }
-        recipients_view = []
-        for recipient in recipients:
-            try:
-                tags = json.loads(recipient.tags_json or "[]")
-            except json.JSONDecodeError:
-                tags = []
-            recipients_view.append({"recipient": recipient, "tags": tags, "tags_text": ", ".join(tags)})
+        try:
+            recipients = db.scalars(select(EmailRecipient).order_by(EmailRecipient.created_at)).all()
+            runtime = runtime_settings(db)
+            hotspot_history = db.scalars(select(HotspotReport).order_by(HotspotReport.report_date.desc()).limit(10)).all()
+            api_tail = runtime.openai_api_key[-4:] if runtime.openai_api_key else ""
+            config_status = {
+                "openai": bool(runtime.openai_api_key),
+                "smtp": bool(runtime.smtp_host and runtime.smtp_username and runtime.smtp_password),
+                "secure": settings.cookie_secure,
+            }
+            appearance = get_json_setting(db, "appearance", {"theme": "light", "font_scale": "100"})
+            business_keywords = get_json_setting(
+                db,
+                "business_keywords",
+                ["无人机足球", "青少年科技体育", "科技特长生", "赛事培训", "安全科普"],
+            )
+            hotspot_sources = get_json_setting(db, "hotspot_sources", ["抖音", "小红书", "微信视频号"])
+            report_schedule = {
+                "frequency": get_setting(db, "report_frequency", "daily"),
+                "weekday": get_setting(db, "report_weekday", "mon"),
+                "monthday": get_setting(db, "report_monthday", "1"),
+            }
+            recipients_view = []
+            for recipient in recipients:
+                try:
+                    tags = json.loads(recipient.tags_json or "[]")
+                except json.JSONDecodeError:
+                    tags = []
+                recipients_view.append({"recipient": recipient, "tags": tags, "tags_text": ", ".join(tags)})
+            diagnostics = diagnostics_status(db)
+            upload_status = latest_import_status(db)
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/settings", exc)
+            runtime = settings
+            hotspot_history = []
+            api_tail = ""
+            config_status = {"openai": False, "smtp": False, "secure": settings.cookie_secure}
+            appearance = {"theme": "light", "font_scale": "100"}
+            business_keywords = []
+            hotspot_sources = []
+            report_schedule = {"frequency": "daily", "weekday": "mon", "monthday": "1"}
+            recipients_view = []
+            diagnostics = {"site": "error", "database": "disconnected", "openai": "missing", "version": APP_VERSION, "last_error": LAST_RUNTIME_ERROR.get("message", ""), "last_error_time": LAST_RUNTIME_ERROR.get("time", ""), "last_error_path": LAST_RUNTIME_ERROR.get("path", "")}
+            upload_status = {"file": "暂无记录", "status": "暂无记录", "time": "", "message": ""}
+            message = "数据加载失败，请稍后重试"
         return page(
             request,
             "settings.html",
@@ -2883,6 +3164,9 @@ def settings_page(request: Request):
             hotspot_sources=", ".join(hotspot_sources),
             report_schedule=report_schedule,
             hotspot_history=hotspot_history,
+            diagnostics=diagnostics,
+            latest_upload=upload_status,
+            message=message,
         )
 
 
@@ -3058,10 +3342,16 @@ def help_page(request: Request):
 @app.get("/logs", response_class=HTMLResponse)
 def logs_page(request: Request, operation_type: str = "", object_type: str = ""):
     with SessionLocal() as db:
-        query = select(OperationLog)
-        if operation_type:
-            query = query.where(OperationLog.operation_type == operation_type)
-        if object_type:
-            query = query.where(OperationLog.object_type == object_type)
-        logs = db.scalars(query.order_by(OperationLog.created_at.desc()).limit(100)).all()
-        return page(request, "logs.html", db, logs=logs, operation_type=operation_type, object_type=object_type)
+        try:
+            query = select(OperationLog)
+            if operation_type:
+                query = query.where(OperationLog.operation_type == operation_type)
+            if object_type:
+                query = query.where(OperationLog.object_type == object_type)
+            logs = db.scalars(query.order_by(OperationLog.created_at.desc()).limit(100)).all()
+            message = request.query_params.get("message", "")
+        except Exception as exc:
+            remember_runtime_error("/logs", exc)
+            logs = []
+            message = "数据加载失败，请稍后重试"
+        return page(request, "logs.html", db, logs=logs, operation_type=operation_type, object_type=object_type, message=message)
