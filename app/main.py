@@ -1841,21 +1841,24 @@ def build_breakdown_overview(
     page_no: int = 1,
     selected_case_id: int | None = None,
 ):
-    query = select(VideoBreakdown)
-    if q:
-        needle = q.strip()
-        query = query.where(or_(VideoBreakdown.title.contains(needle), VideoBreakdown.platform.contains(needle), VideoBreakdown.cover_description.contains(needle), VideoBreakdown.source_url.contains(needle)))
-    if platform:
-        query = query.where(VideoBreakdown.platform == platform)
-    sort_map = {
-        "views": VideoBreakdown.views,
-        "likes": VideoBreakdown.likes,
-        "comments": VideoBreakdown.comments,
-        "created_at": VideoBreakdown.created_at,
-    }
-    sort_column = sort_map.get(sort_by, VideoBreakdown.created_at)
-    sort_order = sort_column.asc() if order == "asc" else sort_column.desc()
-    all_cases = db.scalars(query.order_by(sort_order)).all()
+    try:
+        query = select(VideoBreakdown)
+        if q:
+            needle = q.strip()
+            query = query.where(or_(VideoBreakdown.title.contains(needle), VideoBreakdown.platform.contains(needle), VideoBreakdown.cover_description.contains(needle), VideoBreakdown.source_url.contains(needle)))
+        if platform:
+            query = query.where(VideoBreakdown.platform == platform)
+        sort_map = {
+            "views": VideoBreakdown.views,
+            "likes": VideoBreakdown.likes,
+            "comments": VideoBreakdown.comments,
+            "created_at": VideoBreakdown.created_at,
+        }
+        sort_column = sort_map.get(sort_by, VideoBreakdown.created_at)
+        sort_order = sort_column.asc() if order == "asc" else sort_column.desc()
+        all_cases = db.scalars(query.order_by(sort_order)).all()
+    except Exception:
+        all_cases = []
     total_cases = len(all_cases)
     per_page = 8
     page_no = max(1, page_no)
@@ -1866,20 +1869,39 @@ def build_breakdown_overview(
     cases = all_cases[start:end]
     case_cards = []
     for item in cases:
-        payload = safe_json_loads(item.analysis_json, {})
-        score = payload.get("score", {}) if isinstance(payload, dict) else {}
-        score_value = score.get("explosive_potential") if isinstance(score, dict) else None
-        case_cards.append(
-            {
-                "item": item,
-                "analysis_status": item.analysis_status or item.status or "未开始",
-                "fetch_status": item.fetch_status or "未抓取",
-                "score": score_value if item.analysis_status == "已完成" and score_value not in {None, "", 0, 0.0} else "数据未填写",
-            }
-        )
-    avg_views = sum(case.views for case in all_cases) / total_cases if total_cases else 0
-    latest_case = db.scalar(select(VideoBreakdown).order_by(VideoBreakdown.created_at.desc()))
-    report = db.get(VideoBreakdown, selected_case_id) if selected_case_id else latest_case
+        try:
+            payload = safe_json_loads(getattr(item, "analysis_json", "") or "", {})
+            score = payload.get("score", {}) if isinstance(payload, dict) else {}
+            score_value = score.get("explosive_potential") if isinstance(score, dict) else None
+            case_cards.append(
+                {
+                    "item": item,
+                    "analysis_status": item.analysis_status or item.status or "未开始",
+                    "fetch_status": item.fetch_status or "未抓取",
+                    "score": score_value if item.analysis_status == "已完成" and score_value not in {None, "", 0, 0.0} else "数据未填写",
+                }
+            )
+        except Exception:
+            case_cards.append(
+                {
+                    "item": item,
+                    "analysis_status": getattr(item, "analysis_status", "") or getattr(item, "status", "") or "未开始",
+                    "fetch_status": getattr(item, "fetch_status", "") or "未抓取",
+                    "score": "数据未填写",
+                }
+            )
+    try:
+        avg_views = sum((case.views or 0) for case in all_cases) / total_cases if total_cases else 0
+    except Exception:
+        avg_views = 0
+    try:
+        latest_case = db.scalar(select(VideoBreakdown).order_by(VideoBreakdown.created_at.desc()))
+    except Exception:
+        latest_case = None
+    try:
+        report = db.get(VideoBreakdown, selected_case_id) if selected_case_id else latest_case
+    except Exception:
+        report = latest_case
     if report and report.id not in {item.id for item in all_cases}:
         report = latest_case
     latest_status, latest_progress = breakdown_display_status((report.analysis_status if report else "未开始") or (report.status if report else "未开始"), report.progress if report else 0)
@@ -1936,25 +1958,65 @@ def _breakdown_draft_payload(payload: dict[str, object] | None = None, *, step2_
 @app.get("/breakdown", response_class=HTMLResponse)
 def breakdown_page(request: Request, q: str = "", platform: str = "", sort_by: str = "created_at", order: str = "desc", page_no: int = 1):
     with SessionLocal() as db:
-        context = build_breakdown_overview(db, q=q, platform=platform, sort_by=sort_by, order=order, page_no=page_no)
-        draft = request.session.get("breakdown_draft")
-        if isinstance(draft, dict):
-            context["draft_breakdown"] = draft
-            context["draft_step2_open"] = bool(draft.get("step2_open"))
-        return page(request, "breakdown.html", db, **context)
+        try:
+            context = build_breakdown_overview(db, q=q, platform=platform, sort_by=sort_by, order=order, page_no=page_no)
+            draft = request.session.get("breakdown_draft")
+            if isinstance(draft, dict):
+                context["draft_breakdown"] = draft
+                context["draft_step2_open"] = bool(draft.get("step2_open"))
+            return page(request, "breakdown.html", db, **context)
+        except Exception as exc:
+            user = current_user(request, db)
+            if not user:
+                return redirect("/auth/login")
+            runtime = runtime_settings(db)
+            fallback_context = {
+                "user": user,
+                "user_role_label": role_label(user.role),
+                "permissions": {name: can(user, name) for name in PERMISSIONS},
+                "settings": runtime,
+                "csrf_token": csrf_token(request),
+                "message": "爆款拆解数据加载失败，请稍后重试。",
+                "q": q,
+                "selected_platform": "",
+                "sort_by": "created_at",
+                "sort_order": "desc",
+                "page_no": 1,
+                "total_pages": 1,
+                "total_cases": 0,
+                "cases": [],
+                "recent_cases": [],
+                "hot_rankings": [],
+                "report": None,
+                "report_data": {},
+                "breakdown_stats": {
+                    "total_cases": 0,
+                    "avg_views": 0,
+                    "progress": 0,
+                    "analysis_status": "未开始",
+                    "fetch_status": "未抓取",
+                    "eta": "未开始",
+                },
+                "draft_breakdown": _breakdown_draft_payload({}, step2_open=False),
+                "draft_step2_open": False,
+            }
+            return templates.TemplateResponse(request, "breakdown.html", fallback_context)
 
 
 @app.get("/breakdown/{breakdown_id}", response_class=HTMLResponse)
 def breakdown_detail(request: Request, breakdown_id: int, q: str = "", platform: str = "", sort_by: str = "created_at", order: str = "desc", page_no: int = 1):
     with SessionLocal() as db:
-        if not db.get(VideoBreakdown, breakdown_id):
-            return redirect("/breakdown", "案例不存在")
-        context = build_breakdown_overview(db, q=q, platform=platform, sort_by=sort_by, order=order, page_no=page_no, selected_case_id=breakdown_id)
-        draft = request.session.get("breakdown_draft")
-        if isinstance(draft, dict):
-            context["draft_breakdown"] = draft
-            context["draft_step2_open"] = bool(draft.get("step2_open"))
-        return page(request, "breakdown.html", db, **context)
+        try:
+            if not db.get(VideoBreakdown, breakdown_id):
+                return redirect("/breakdown", "案例不存在")
+            context = build_breakdown_overview(db, q=q, platform=platform, sort_by=sort_by, order=order, page_no=page_no, selected_case_id=breakdown_id)
+            draft = request.session.get("breakdown_draft")
+            if isinstance(draft, dict):
+                context["draft_breakdown"] = draft
+                context["draft_step2_open"] = bool(draft.get("step2_open"))
+            return page(request, "breakdown.html", db, **context)
+        except Exception:
+            return redirect("/breakdown", "爆款拆解数据加载失败，请稍后重试。")
 
 
 def _parse_breakdown_number(value: object) -> float:
@@ -2269,16 +2331,22 @@ def api_viral_list(request: Request, q: str = "", platform: str = "", page: int 
     with SessionLocal() as db:
         if not current_user(request, db):
             return JSONResponse({"error": "请先登录"}, status_code=401)
-        query = select(VideoBreakdown)
-        if q:
-            needle = q.strip()
-            query = query.where(or_(VideoBreakdown.title.contains(needle), VideoBreakdown.platform.contains(needle), VideoBreakdown.cover_description.contains(needle), VideoBreakdown.source_url.contains(needle)))
-        if platform:
-            query = query.where(VideoBreakdown.platform == platform)
-        total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-        page = max(1, page)
-        page_size = max(1, min(page_size, 100))
-        rows = db.scalars(query.order_by(VideoBreakdown.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+        try:
+            query = select(VideoBreakdown)
+            if q:
+                needle = q.strip()
+                query = query.where(or_(VideoBreakdown.title.contains(needle), VideoBreakdown.platform.contains(needle), VideoBreakdown.cover_description.contains(needle), VideoBreakdown.source_url.contains(needle)))
+            if platform:
+                query = query.where(VideoBreakdown.platform == platform)
+            total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+            page = max(1, page)
+            page_size = max(1, min(page_size, 100))
+            rows = db.scalars(query.order_by(VideoBreakdown.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+        except Exception:
+            total = 0
+            page = max(1, page)
+            page_size = max(1, min(page_size, 100))
+            rows = []
         return JSONResponse(
             {
                 "ok": True,
@@ -2295,10 +2363,13 @@ def api_viral_detail(request: Request, viral_id: int):
     with SessionLocal() as db:
         if not current_user(request, db):
             return JSONResponse({"error": "请先登录"}, status_code=401)
-        case = db.get(VideoBreakdown, viral_id)
-        if not case:
-            return JSONResponse({"error": "案例不存在"}, status_code=404)
-        return JSONResponse({"ok": True, "item": _serialize_breakdown_case(case)})
+        try:
+            case = db.get(VideoBreakdown, viral_id)
+            if not case:
+                return JSONResponse({"error": "案例不存在"}, status_code=404)
+            return JSONResponse({"ok": True, "item": _serialize_breakdown_case(case)})
+        except Exception:
+            return JSONResponse({"ok": False, "error": "爆款拆解数据加载失败，请稍后重试。"}, status_code=500)
 
 
 @app.delete("/api/viral/{viral_id}")
